@@ -38,7 +38,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("NutriSense")
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+BOT_TOKEN = "8740306918:AAEDMvoW4ZJ5lSvrkd8NGmFaoavhXcc5EaA"
 MONO_TOKEN = os.getenv("MONO_TOKEN", "")
 ADMIN_ID = 342045533
 CHANNEL_ID = os.getenv("CHANNEL_ID", "@matmatias")
