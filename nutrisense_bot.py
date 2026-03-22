@@ -40,7 +40,7 @@ log = logging.getLogger("NutriSense")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 MONO_TOKEN = os.getenv("MONO_TOKEN", "")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "342045533"))
+ADMIN_ID = 342045533
 CHANNEL_ID = os.getenv("CHANNEL_ID", "@matmatias")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
 MONO_JAR_URL = "https://send.monobank.ua/jar/8hUo6jMR5M"
