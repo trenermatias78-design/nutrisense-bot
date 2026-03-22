@@ -53,7 +53,11 @@ ContentType
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+try:
+from dotenv import load_dotenv
 load_dotenv()
+except Exception:
+pass
 logging.basicConfig(
 level=logging.INFO,
 format=”%(asctime)s | %(levelname)s | %(name)s | %(message)s”
@@ -67,8 +71,11 @@ log = logging.getLogger(“NutriSense”)
 # ──────────────────────────────────────────────
 
 BOT_TOKEN    = os.getenv(“BOT_TOKEN”, “”)
-MONO_TOKEN   = os.getenv(“MONO_TOKEN”, “”)       # Не використовується (jar-оплата)
-MONO_JAR_URL = “https://send.monobank.ua/jar/8hUo6jMR5M”  # Посилання на банку
+MONO_TOKEN   = os.getenv(“MONO_TOKEN”, “”)
+ADMIN_ID     = int(os.getenv(“ADMIN_ID”, “342045533”))
+CHANNEL_ID   = os.getenv(“CHANNEL_ID”, “@matmatias”)
+WEBHOOK_URL  = os.getenv(“WEBHOOK_URL”, “”)
+MONO_JAR_URL = “https://send.monobank.ua/jar/8hUo6jMR5M”
 ADMIN_ID     = int(os.getenv(“ADMIN_ID”, “342045533”))
 CHANNEL_ID   = os.getenv(“CHANNEL_ID”, “@matmatias”)
 WEBHOOK_URL  = os.getenv(“WEBHOOK_URL”, “”)      # порожньо = polling
