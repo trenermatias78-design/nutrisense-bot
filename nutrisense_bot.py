@@ -1,27 +1,10 @@
-“””
-╔══════════════════════════════════════════════════════════════╗
-║              NUTRISENSE BOT — ПОВНИЙ КОД                     ║
-║              @NutriSenseBot — твій нутриціолог               ║
-║                                                              ║
-║  Стек:    aiogram 3.x, SQLite, aiohttp                       ║
-║  Оплата:  Monobank acquiring (картки Visa/Mastercard)        ║
-║  Контент: 28 тижнів освітніх матеріалів                      ║
-║  Адмін:   ID 342045533                                       ║
-╚══════════════════════════════════════════════════════════════╝
+# NutriSense Bot
 
-ВСТАНОВЛЕННЯ:
-pip install aiogram==3.4.1 aiohttp aiosqlite python-dotenv
+# @NutriSenseUABot - personal nutritionist
 
-ЗАПУСК:
-python nutrisense_bot.py
+# aiogram 3.x, SQLite, Monobank jar payment
 
-.env файл:
-BOT_TOKEN=your_bot_token
-MONO_TOKEN=your_monobank_token
-ADMIN_ID=342045533
-CHANNEL_ID=@matmatias
-WEBHOOK_URL=https://yourdomain.com/webhook  (якщо webhook)
-“””
+# Admin ID: 342045533
 
 # ──────────────────────────────────────────────
 
