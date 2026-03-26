@@ -974,8 +974,13 @@ async def cb_menu_week(cq: CallbackQuery):
         return
 
     plan = user.get("plan", "free")
-    text = "📅 <b>Меню на тиждень</b>\n\n"
-    for day_num, day_data in MENU_BASE.items():
+    week_num = user.get("week", 1) or 1
+    menu_week_idx = ((week_num - 1) % 4) + 1
+    current_menu = MENU_ROTATION.get(menu_week_idx, MENU_ROTATION[1])
+
+    text = f"📅 <b>Меню на тиждень (меню #{menu_week_idx})</b>\n\n"
+    for day_num in range(1, 8):
+        day_data = current_menu.get(day_num, current_menu[1])
         text += f"<b>{day_data['day']}</b>\n"
         text += f"🌅 {day_data['breakfast'][0]}\n"
         text += f"☀️ {day_data['lunch'][0]}\n"
@@ -986,7 +991,7 @@ async def cb_menu_week(cq: CallbackQuery):
 
     b = InlineKeyboardBuilder()
     if plan in ("premium", "vip"):
-        b.button(text="🔄 Змінити меню", callback_data="menu_change")
+        b.button(text="🔄 Обрати інший день", callback_data="menu_change")
     b.button(text="🏠 Головне меню", callback_data="main_menu")
     b.adjust(1)
 
@@ -1003,11 +1008,11 @@ async def cb_menu_next(cq: CallbackQuery):
     current_day = datetime.now().weekday() + 1
     next_day = current_day + 1 if current_day < 7 else 1
     plan = user.get("plan", "free")
-
-    week_num2 = user.get('week', 1) or 1
-    menu_text = generate_menu_for_user(user, next_day, plan, week_num2)
-    day_name = MENU_BASE[next_day]["day"]
-
+    week_num = user.get("week", 1) or 1
+    menu_week_idx = ((week_num - 1) % 4) + 1
+    current_menu = MENU_ROTATION.get(menu_week_idx, MENU_ROTATION[1])
+    day_name = current_menu.get(next_day, current_menu[1])["day"]
+    menu_text = generate_menu_for_user(user, next_day, plan, week_num)
     await cq.message.edit_text(
         f"➡️ <b>Меню на завтра ({day_name})</b>\n\n" + menu_text,
         reply_markup=kb_menu_actions(plan)
@@ -1031,7 +1036,11 @@ async def cb_menu_change(cq: CallbackQuery):
         return
 
     b = InlineKeyboardBuilder()
-    for day_num, day_data in MENU_BASE.items():
+    week_num = user.get("week", 1) or 1
+    menu_week_idx = ((week_num - 1) % 4) + 1
+    current_menu = MENU_ROTATION.get(menu_week_idx, MENU_ROTATION[1])
+    for day_num in range(1, 8):
+        day_data = current_menu.get(day_num, current_menu[1])
         b.button(text=f"📅 {day_data['day']}", callback_data=f"menu_show_{day_num}")
     b.button(text="◀️ Назад", callback_data="menu_today")
     b.adjust(2)
@@ -1048,8 +1057,8 @@ async def cb_menu_show_day(cq: CallbackQuery):
     user = await get_user(cq.from_user.id)
     day_num = int(cq.data.replace("menu_show_", ""))
     plan = user.get("plan", "free")
-    week_num3 = user.get('week', 1) or 1
-    menu_text = generate_menu_for_user(user, day_num, plan, week_num3)
+    week_num = user.get("week", 1) or 1
+    menu_text = generate_menu_for_user(user, day_num, plan, week_num)
     await cq.message.edit_text(menu_text, reply_markup=kb_menu_actions(plan))
     await cq.answer()
 
