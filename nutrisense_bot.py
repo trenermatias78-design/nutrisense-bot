@@ -1334,7 +1334,7 @@ async def cb_tracker(cq: CallbackQuery):
     if not has_access(user, "premium"):
         await cq.message.edit_text(
             "🔒 <b>Трекер доступний з Premium</b>\n\n"
-            "Фіксуй прийоми їжі і отримуй щотижневий звіт прогресу.\n\n"
+            "Відмічай прийоми їжі по меню і тримай режим харчування.\n\n"
             "Вартість: <b>349 грн/міс</b>",
             reply_markup=kb_plans()
         )
@@ -1345,58 +1345,92 @@ async def cb_tracker(cq: CallbackQuery):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            "SELECT * FROM tracker WHERE user_id = ? AND date = ?",
+            "SELECT meal FROM tracker WHERE user_id = ? AND date = ?",
             (cq.from_user.id, today)
         ) as cur:
             entries = await cur.fetchall()
 
-    text = f"📅 <b>Трекер їжі — {today}</b>\n\n"
-    if entries:
-        total_meals = len(entries)
-        text += f"Записано прийомів: {total_meals}\n\n"
-        for e in entries:
-            text += f"• {e['meal']}: {e['note']}\n"
-        text += "\n💡 Надсилай прийоми у форматі:\n<code>Сніданок: вівсянка, яйця, ягоди</code>"
+    done = {e["meal"] for e in entries}
+    plan = user.get("plan", "free")
+
+    meals = ["Сніданок", "Обід", "Вечеря"]
+    if plan in ("premium", "vip"):
+        meals += ["Перекус 1", "Перекус 2"]
+
+    total = len(meals)
+    completed = len([m for m in meals if m in done])
+
+    # Прогрес-бар
+    filled = round((completed / total) * 10)
+    bar = "🟩" * filled + "⬜" * (10 - filled)
+
+    text = (
+        f"✅ <b>Чек-ліст харчування — {datetime.now().strftime('%d.%m.%Y')}</b>\n\n"
+        f"{bar} {completed}/{total} прийомів\n\n"
+    )
+
+    for meal in meals:
+        icon = "✅" if meal in done else "⬜"
+        text += f"{icon} {meal}\n"
+
+    if completed == total:
+        text += "\n🏆 <b>Відмінно! Всі прийоми виконано!</b>\nТак тримати — режим харчування це основа результату."
+    elif completed == 0:
+        text += "\n💡 Натискай кнопку після кожного прийому їжі по меню."
     else:
-        text += (
-            "Сьогодні записів немає.\n\n"
-            "Надсилай прийоми їжі у форматі:\n"
-            "<code>Сніданок: вівсянка, яйця, ягоди</code>\n\n"
-            "💡 Трекер допомагає бачити реальну картину харчування"
-        )
+        remaining = [m for m in meals if m not in done]
+        text += f"\n⏳ Залишилось: {', '.join(remaining)}"
 
     b = InlineKeyboardBuilder()
+    for meal in meals:
+        if meal not in done:
+            b.button(text=f"✅ {meal}", callback_data=f"check_meal_{meal}")
     b.button(text="🍽 Моє меню", callback_data="menu_today")
     b.button(text="🏠 Головне меню", callback_data="main_menu")
     b.adjust(1)
+
     await cq.message.edit_text(text, reply_markup=b.as_markup())
     await cq.answer()
 
-@router.message(F.text.regexp(r"^(Сніданок|Обід|Вечеря|Перекус):.+"))
-async def handle_tracker_entry(msg: Message):
-    user = await get_user(msg.from_user.id)
+
+@router.callback_query(F.data.startswith("check_meal_"))
+async def cb_check_meal(cq: CallbackQuery):
+    user = await get_user(cq.from_user.id)
     if not has_access(user, "premium"):
+        await cq.answer("🔒 Доступно з Premium", show_alert=True)
         return
-    parts = msg.text.split(":", 1)
-    meal = parts[0].strip()
-    note = parts[1].strip() if len(parts) > 1 else ""
+
+    meal = cq.data.replace("check_meal_", "")
     today = datetime.now().strftime("%Y-%m-%d")
+
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "INSERT INTO tracker (user_id, date, meal, note) VALUES (?,?,?,?)",
-            (msg.from_user.id, today, meal, note)
-        )
-        await db.commit()
-    b = InlineKeyboardBuilder()
-    b.button(text="📅 Переглянути трекер", callback_data="tracker")
-    b.button(text="🍽 Моє меню", callback_data="menu_today")
-    b.adjust(1)
-    await msg.answer(
-        f"✅ <b>Записано!</b>\n\n"
-        f"🍽 {meal}: {note}\n\n"
-        f"Продовжуй фіксувати прийоми їжі 💪",
-        reply_markup=b.as_markup()
-    )
+        # Перевіряємо чи вже відмічено
+        async with db.execute(
+            "SELECT id FROM tracker WHERE user_id = ? AND date = ? AND meal = ?",
+            (cq.from_user.id, today, meal)
+        ) as cur:
+            existing = await cur.fetchone()
+
+        if not existing:
+            await db.execute(
+                "INSERT INTO tracker (user_id, date, meal, note) VALUES (?,?,?,?)",
+                (cq.from_user.id, today, meal, "виконано")
+            )
+            await db.commit()
+
+    # Повідомлення-реакція
+    meal_reactions = {
+        "Сніданок": "🌅 Сніданок відмічено! Гарний старт дня.",
+        "Обід": "☀️ Обід відмічено! Половина дня позаду.",
+        "Вечеря": "🌙 Вечеря відмічено! День завершено добре.",
+        "Перекус 1": "🍎 Перший перекус відмічено!",
+        "Перекус 2": "🍎 Другий перекус відмічено!",
+    }
+    reaction = meal_reactions.get(meal, f"✅ {meal} відмічено!")
+    await cq.answer(reaction, show_alert=False)
+
+    # Оновлюємо чек-ліст
+    await cb_tracker(cq)
 
 # ─── ПРОФІЛЬ ───────────────────────────────────────────────────────
 @router.callback_query(F.data == "my_profile")
