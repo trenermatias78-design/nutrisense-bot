@@ -1,12 +1,10 @@
-# NutriSense Bot
-# @NutriSenseUABot - personal nutritionist
-# aiogram 3.x, SQLite, Monobank jar payment
-# Admin ID: 342045533
+# NutriSense Bot v2
+# @NutriSenseUABot
+# aiogram 3.x, SQLite, Monobank jar
 
 import asyncio
 import logging
 import os
-import math
 import json
 import aiosqlite
 import aiohttp
@@ -15,15 +13,11 @@ from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.filters import Command, CommandStart, StateFilter
+from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import (
-    Message, CallbackQuery, InlineKeyboardMarkup,
-    InlineKeyboardButton, LabeledPrice, PreCheckoutQuery,
-    ContentType
-)
+from aiogram.types import Message, CallbackQuery, ContentType
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 try:
@@ -39,53 +33,42 @@ logging.basicConfig(
 log = logging.getLogger("NutriSense")
 
 BOT_TOKEN = "8740306918:AAEDMvoW4ZJ5lSvrkd8NGmFaoavhXcc5EaA"
-MONO_TOKEN = os.getenv("MONO_TOKEN", "")
 ADMIN_ID = 342045533
-CHANNEL_ID = os.getenv("CHANNEL_ID", "@matmatias")
+CHANNEL_ID = "@matmatias"
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
 MONO_JAR_URL = "https://send.monobank.ua/jar/8hUo6jMR5M"
 DB_PATH = "nutrisense.db"
+
 PLANS = {
     "start": {
-        "name": "Start",
-        "price_uah": 199,
-        "price_kopiy": 19900,
-        "days": 30,
-        "emoji": "🌱",
+        "name": "Start", "price_uah": 199, "days": 30, "emoji": "🌱",
         "features": [
-            "📊 Точний розрахунок КБЖУ",
-            "🍽 Індивідуальний план харчування",
+            "📊 Розрахунок КБЖУ",
+            "🍽 Меню на тиждень (сніданок, обід, вечеря)",
             "🧠 Тест харчової поведінки",
             "📚 28 тижнів освітнього контенту",
-            "📋 Рекомендації по продуктах",
+            "💡 Щоденна порада по харчуванню",
         ]
     },
     "premium": {
-        "name": "Premium",
-        "price_uah": 349,
-        "price_kopiy": 34900,
-        "days": 30,
-        "emoji": "🌿",
+        "name": "Premium", "price_uah": 349, "days": 30, "emoji": "🌿",
         "features": [
             "✅ Все з Start",
-            "📸 Аналіз фото тарілки",
+            "🍱 Меню з перекусами + альтернативи страв",
             "📅 Щоденний трекер їжі",
             "📈 Щотижневий звіт прогресу",
+            "🔄 Зміна меню в будь-який день",
             "💬 Пріоритетна підтримка",
         ]
     },
     "vip": {
-        "name": "VIP",
-        "price_uah": 549,
-        "price_kopiy": 54900,
-        "days": 30,
-        "emoji": "👑",
+        "name": "VIP", "price_uah": 549, "days": 30, "emoji": "👑",
         "features": [
             "✅ Все з Premium",
-            "🤖 ШІ-нутриціолог необмежено",
-            "🎯 Персональний план на місяць",
-            "⚡ Відповідь протягом 1 години",
-            "🏆 VIP-чат з нутриціологом",
+            "🎯 Персональне меню під ціль і смаки",
+            "⚡ Меню на місяць одразу",
+            "🏆 Необмежена зміна меню",
+            "📱 VIP підтримка 24/7",
         ]
     }
 }
@@ -95,14 +78,205 @@ ACTIVITY_LEVELS = {
     "light":       (1.375, "Легка активність (1-3 тренування/тиж)"),
     "moderate":    (1.55,  "Помірна активність (3-5 тренувань/тиж)"),
     "active":      (1.725, "Висока активність (6-7 тренувань/тиж)"),
-    "very_active": (1.9,   "Дуже висока (спортсмен/фізична робота)"),
+    "very_active": (1.9,   "Дуже висока (спортсмен)"),
 }
 
 GOALS = {
-    "lose":     ("Схуднення (-300 ккал)",  -300),
-    "maintain": ("Підтримка ваги (0 ккал)",   0),
-    "gain":     ("Набір маси (+300 ккал)", +300),
+    "lose":     ("Схуднення",      -300),
+    "maintain": ("Підтримка ваги",    0),
+    "gain":     ("Набір маси",     +300),
 }
+
+# ─── МЕНЮ НА ТИЖДЕНЬ ───────────────────────────────────────────────
+# Базове меню (Start) — 7 днів, 3 прийоми
+# Premium додає перекуси + альтернативи
+# VIP генерує персоналізоване меню
+
+MENU_ROTATION = {
+    # ── ТИЖДЕНЬ 1 ──────────────────────────────────────────────
+    1: {
+        1: {"day": "Понеділок",
+            "breakfast": ("Вівсянка з ягодами і горіхами", 380),
+            "lunch": ("Куряча грудка з гречкою і овочевим салатом", 520),
+            "dinner": ("Запечена риба з бататом і броколі", 420),
+            "snack1": ("Яблуко + жменя мигдалю", 180),
+            "snack2": ("Йогурт без цукру + насіння чіа", 150)},
+        2: {"day": "Вівторок",
+            "breakfast": ("Омлет з 3 яєць зі шпинатом і помідором", 340),
+            "lunch": ("Суп-пюре з сочевиці + цільнозерновий хліб", 480),
+            "dinner": ("Індичка тушкована з кабачком і рисом", 440),
+            "snack1": ("Твердий сир + огірок", 160),
+            "snack2": ("Кефір + жменя горіхів", 200)},
+        3: {"day": "Середа",
+            "breakfast": ("Гречана каша з яйцем і зеленню", 360),
+            "lunch": ("Лосось запечений з булгуром і салатом", 560),
+            "dinner": ("Куряче філе на грилі з овочами", 400),
+            "snack1": ("Банан + арахісова паста 1 ч.л.", 190),
+            "snack2": ("Знежирений сир з ягодами", 170)},
+        4: {"day": "Четвер",
+            "breakfast": ("Тости з авокадо і яйцями пашот", 420),
+            "lunch": ("Нут з овочами і оливковою олією", 500),
+            "dinner": ("Тріска запечена з картоплею і зеленню", 410),
+            "snack1": ("Грейпфрут + жменя насіння", 140),
+            "snack2": ("Кефір або протеїновий коктейль", 180)},
+        5: {"day": "П'ятниця",
+            "breakfast": ("Йогурт з гранолою і свіжими фруктами", 390),
+            "lunch": ("Паста ТСП з куркою і томатним соусом", 540),
+            "dinner": ("Яловичина нежирна з гречкою і салатом", 480),
+            "snack1": ("Морква + хумус", 150),
+            "snack2": ("Волоські горіхи 30г", 195)},
+        6: {"day": "Субота",
+            "breakfast": ("Млинці з вівсяного борошна з медом", 410),
+            "lunch": ("Домашній борщ + шматок м'яса", 510),
+            "dinner": ("Креветки з рисом і овочами", 430),
+            "snack1": ("Фруктовий салат", 130),
+            "snack2": ("Сир кисломолочний з фруктами", 160)},
+        7: {"day": "Неділя",
+            "breakfast": ("Сирники із знежиреного сиру з ягодами", 380),
+            "lunch": ("Запечена курка з овочами і булгуром", 550),
+            "dinner": ("Риба на парі з гречкою і зеленим салатом", 400),
+            "snack1": ("Зелений смузі шпинат яблуко імбир", 120),
+            "snack2": ("Темний шоколад 70% 20г + горіхи", 210)},
+    },
+    # ── ТИЖДЕНЬ 2 ──────────────────────────────────────────────
+    2: {
+        1: {"day": "Понеділок",
+            "breakfast": ("Яєчня з 2 яєць з томатами і зеленою цибулею", 310),
+            "lunch": ("Курячий бульйон з локшиною і овочами", 490),
+            "dinner": ("Скумбрія запечена з картоплею і зеленню", 450),
+            "snack1": ("Груша + 5 волоських горіхів", 170),
+            "snack2": ("Йогурт грецький без цукру", 140)},
+        2: {"day": "Вівторок",
+            "breakfast": ("Пшоняна каша з гарбузом і медом", 370),
+            "lunch": ("Індичка з овочевим рататуєм і рисом", 530),
+            "dinner": ("Тефтелі з курки з тушкованою капустою", 410),
+            "snack1": ("Апельсин + мигдаль 20г", 175),
+            "snack2": ("Кефір 1% склянка", 90)},
+        3: {"day": "Середа",
+            "breakfast": ("Авокадо-тост на житньому хлібі + яйце", 400),
+            "lunch": ("Квасоля тушкована з куркою і томатами", 510),
+            "dinner": ("Форель запечена з лимоном і спаржею", 430),
+            "snack1": ("Селера + арахісова паста", 160),
+            "snack2": ("Сир кисломолочний 5% з чорницею", 165)},
+        4: {"day": "Четвер",
+            "breakfast": ("Вівсянка на молоці з бананом і корицею", 400),
+            "lunch": ("Гречаний суп з грибами і зеленню", 470),
+            "dinner": ("Куряча грудка з цвітною капустою і гречкою", 440),
+            "snack1": ("Ківіфрукт 2шт + жменя насіння льону", 145),
+            "snack2": ("Ряжанка склянка", 120)},
+        5: {"day": "П'ятниця",
+            "breakfast": ("Омлет з куркою і болгарським перцем", 360),
+            "lunch": ("Паста з морепродуктами і томатним соусом", 550),
+            "dinner": ("Яловичий стейк нежирний з овочами гриль", 490),
+            "snack1": ("Ягоди змішані 150г", 80),
+            "snack2": ("Горіхова суміш 30г", 185)},
+        6: {"day": "Субота",
+            "breakfast": ("Французький тост із цільнозернового хліба з яйцем", 390),
+            "lunch": ("Пельмені домашні з курятини з бульйоном", 500),
+            "dinner": ("Лосось з кускусом і запеченими овочами", 460),
+            "snack1": ("Яблуко + сир кисломолочний", 180),
+            "snack2": ("Молоко тепле з медом", 110)},
+        7: {"day": "Неділя",
+            "breakfast": ("Налисники з сиром і зеленню", 420),
+            "lunch": ("Курячий шашлик з овочами і лавашем", 560),
+            "dinner": ("Рибні котлети з пюре і салатом", 430),
+            "snack1": ("Банан + 3 кубики темного шоколаду", 195),
+            "snack2": ("Кефір + насіння чіа", 130)},
+    },
+    # ── ТИЖДЕНЬ 3 ──────────────────────────────────────────────
+    3: {
+        1: {"day": "Понеділок",
+            "breakfast": ("Рисова каша з кокосовим молоком і манго", 395),
+            "lunch": ("Крем-суп з броколі + куряча грудка", 505),
+            "dinner": ("Дорада запечена з лимоном і травами", 415),
+            "snack1": ("Нектарин + жменя фісташок", 185),
+            "snack2": ("Знежирений йогурт з полуницею", 145)},
+        2: {"day": "Вівторок",
+            "breakfast": ("Тост з лососем і вершковим сиром і зеленню", 410),
+            "lunch": ("Теплий салат з нутом куркою і овочами", 520),
+            "dinner": ("Котлети з індички з гречкою і огірком", 440),
+            "snack1": ("Помело + кеш'ю 20г", 165),
+            "snack2": ("Простокваша склянка", 100)},
+        3: {"day": "Середа",
+            "breakfast": ("Булгур з яйцем і свіжими овочами", 375),
+            "lunch": ("Суп харчо з куркою і рисом", 495),
+            "dinner": ("Тунець консервований з рисом і зеленим горошком", 420),
+            "snack1": ("Грейпфрут + гарбузове насіння 20г", 140),
+            "snack2": ("Сир кисломолочний з медом 1 ч.л.", 155)},
+        4: {"day": "Четвер",
+            "breakfast": ("Яєчня скрембл з лососем і зеленню", 430),
+            "lunch": ("Овочевий рататуй з куркою і хлібом", 515),
+            "dinner": ("Куряче філе в кефірі з рисом і салатом", 435),
+            "snack1": ("Ківі 2шт + мигдаль 15г", 155),
+            "snack2": ("Кефір з корицею", 95)},
+        5: {"day": "П'ятниця",
+            "breakfast": ("Вівсяні млинці з ягодами і сметаною", 405),
+            "lunch": ("Плов з куркою і овочами", 545),
+            "dinner": ("Судак запечений з овочами і лимоном", 400),
+            "snack1": ("Свіжа морква + хумус домашній", 155),
+            "snack2": ("Йогурт з насінням чіа і малиною", 160)},
+        6: {"day": "Субота",
+            "breakfast": ("Яєчня з грибами цибулею і сиром", 380),
+            "lunch": ("Шурпа з яловичиною і овочами", 530),
+            "dinner": ("Запечені овочі з фетою і куркою", 445),
+            "snack1": ("Суниця 200г", 65),
+            "snack2": ("Горіхово-ягідна суміш 40г", 200)},
+        7: {"day": "Неділя",
+            "breakfast": ("Пудинг з насіння чіа на мигдальному молоці", 365),
+            "lunch": ("Домашня піца на цільнозерновому тісті з куркою", 555),
+            "dinner": ("Мідії тушковані з томатами і зеленню", 390),
+            "snack1": ("Груша + бринза 30г", 175),
+            "snack2": ("Ряжанка + насіння льону", 125)},
+    },
+    # ── ТИЖДЕНЬ 4 ──────────────────────────────────────────────
+    4: {
+        1: {"day": "Понеділок",
+            "breakfast": ("Смузі-боул з бананом ягодами і гранолою", 415),
+            "lunch": ("Курячі фрикадельки з томатним соусом і пастою ТСП", 535),
+            "dinner": ("Камбала запечена з броколі і лимоном", 405),
+            "snack1": ("Абрикоси 3шт + волоські горіхи", 170),
+            "snack2": ("Грецький йогурт 2% з медом", 150)},
+        2: {"day": "Вівторок",
+            "breakfast": ("Кіноа з яйцем і свіжими овочами", 385),
+            "lunch": ("Азіатський суп з локшиною і куркою", 500),
+            "dinner": ("Яловичина тушкована з картоплею і зеленню", 460),
+            "snack1": ("Персик + жменя мигдалю", 180),
+            "snack2": ("Кефір з куркумою", 100)},
+        3: {"day": "Середа",
+            "breakfast": ("Яєчня з цукіні і пармезаном", 360),
+            "lunch": ("Теплий салат з лососем булгуром і рукколою", 545),
+            "dinner": ("Курка по-грузинськи з горіховим соусом і рисом", 470),
+            "snack1": ("Диня 200г + насіння гарбуза", 145),
+            "snack2": ("Йогурт з льняним насінням", 140)},
+        4: {"day": "Четвер",
+            "breakfast": ("Вівсянка з тертим яблуком і корицею", 370),
+            "lunch": ("Суп-пюре з гарбуза з куркою і вершками", 510),
+            "dinner": ("Тілапія запечена з рисом і салатом", 415),
+            "snack1": ("Сливи 3шт + кеш'ю 20г", 165),
+            "snack2": ("Ряжанка + насіння чіа", 125)},
+        5: {"day": "П'ятниця",
+            "breakfast": ("Два яйця пашот на цільнозерновому тості з авокадо", 425),
+            "lunch": ("Паелья з морепродуктами і овочами", 555),
+            "dinner": ("Куряче філе у кунжуті з гречкою і огірком", 445),
+            "snack1": ("Виноград 150г + бринза", 175),
+            "snack2": ("Кефір з чорницею і медом", 130)},
+        6: {"day": "Субота",
+            "breakfast": ("Рикотта з медом горіхами і фруктами", 400),
+            "lunch": ("Стейк з курятини з запеченими овочами і соусом", 540),
+            "dinner": ("Морська риба з цибулею і помідорами в фользі", 420),
+            "snack1": ("Кавун 300г", 90),
+            "snack2": ("Горіхово-сухофруктова суміш 35г", 190)},
+        7: {"day": "Неділя",
+            "breakfast": ("Вафлі з вівсяного борошна з ягодами і йогуртом", 410),
+            "lunch": ("Курячий карі з рисом і зеленню", 560),
+            "dinner": ("Запечений лосось з кускусом і зеленим салатом", 455),
+            "snack1": ("Інжир 2шт + мигдаль 20г", 195),
+            "snack2": ("Сир кисломолочний з ваніллю", 145)},
+    },
+}
+
+
+# ─── СТАНИ ─────────────────────────────────────────────────────────
 class KBJUState(StatesGroup):
     waiting_gender   = State()
     waiting_age      = State()
@@ -117,10 +291,7 @@ class BehaviorTestState(StatesGroup):
 class AdminBroadcastState(StatesGroup):
     waiting_text = State()
 
-class AdminPaymentState(StatesGroup):
-    waiting_user_id = State()
-    waiting_plan    = State()
-
+# ─── DATABASE ──────────────────────────────────────────────────────
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript("""
@@ -132,7 +303,6 @@ async def init_db():
                 plan_until  TEXT,
                 joined_at   TEXT DEFAULT CURRENT_TIMESTAMP,
                 week        INTEGER DEFAULT 1,
-                last_post   TEXT,
                 gender      TEXT,
                 age         INTEGER,
                 weight      REAL,
@@ -142,7 +312,8 @@ async def init_db():
                 calories    INTEGER,
                 protein     REAL,
                 fat         REAL,
-                carbs       REAL
+                carbs       REAL,
+                menu_day    INTEGER DEFAULT 1
             );
             CREATE TABLE IF NOT EXISTS payments (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -151,8 +322,7 @@ async def init_db():
                 amount_uah  INTEGER,
                 invoice_id  TEXT,
                 status      TEXT DEFAULT 'pending',
-                created_at  TEXT DEFAULT CURRENT_TIMESTAMP,
-                paid_at     TEXT
+                created_at  TEXT DEFAULT CURRENT_TIMESTAMP
             );
             CREATE TABLE IF NOT EXISTS tracker (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -169,9 +339,7 @@ async def init_db():
 async def get_user(user_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        async with db.execute(
-            "SELECT * FROM users WHERE user_id = ?", (user_id,)
-        ) as cur:
+        async with db.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)) as cur:
             row = await cur.fetchone()
             return dict(row) if row else None
 
@@ -179,15 +347,11 @@ async def upsert_user(user_id: int, **kwargs):
     async with aiosqlite.connect(DB_PATH) as db:
         existing = await get_user(user_id)
         if not existing:
-            await db.execute(
-                "INSERT INTO users (user_id) VALUES (?)", (user_id,)
-            )
+            await db.execute("INSERT INTO users (user_id) VALUES (?)", (user_id,))
         if kwargs:
             sets = ", ".join(f"{k} = ?" for k in kwargs)
             vals = list(kwargs.values()) + [user_id]
-            await db.execute(
-                f"UPDATE users SET {sets} WHERE user_id = ?", vals
-            )
+            await db.execute(f"UPDATE users SET {sets} WHERE user_id = ?", vals)
         await db.commit()
 
 async def get_all_users():
@@ -201,31 +365,21 @@ async def get_stats():
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT COUNT(*) FROM users") as c:
             total = (await c.fetchone())[0]
-        async with db.execute(
-            "SELECT COUNT(*) FROM users WHERE plan != 'free'"
-        ) as c:
+        async with db.execute("SELECT COUNT(*) FROM users WHERE plan != 'free'") as c:
             paid = (await c.fetchone())[0]
-        async with db.execute(
-            "SELECT COUNT(*) FROM payments WHERE status = 'paid'"
-        ) as c:
-            payments = (await c.fetchone())[0]
-        async with db.execute(
-            "SELECT SUM(amount_uah) FROM payments WHERE status = 'paid'"
-        ) as c:
+        async with db.execute("SELECT SUM(amount_uah) FROM payments WHERE status = 'paid'") as c:
             revenue = (await c.fetchone())[0] or 0
-    return {"total": total, "paid": paid,
-            "payments": payments, "revenue": revenue}
+    return {"total": total, "paid": paid, "revenue": revenue}
 
-async def save_payment(user_id: int, plan: str, amount: int, invoice_id: str):
+async def save_payment(user_id, plan, amount, invoice_id):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            """INSERT INTO payments (user_id, plan, amount_uah, invoice_id)
-               VALUES (?, ?, ?, ?)""",
+            "INSERT INTO payments (user_id, plan, amount_uah, invoice_id) VALUES (?,?,?,?)",
             (user_id, plan, amount, invoice_id)
         )
         await db.commit()
 
-def has_access(user: dict, required: str) -> bool:
+def has_access(user, required):
     order = {"free": 0, "start": 1, "premium": 2, "vip": 3}
     if not user:
         return False
@@ -237,24 +391,22 @@ def has_access(user: dict, required: str) -> bool:
             return False
     return order.get(plan, 0) >= order.get(required, 0)
 
-def is_admin(user_id: int) -> bool:
+def is_admin(user_id):
     return user_id == ADMIN_ID
+
+# ─── КБЖУ ──────────────────────────────────────────────────────────
 def calculate_kbju(gender, age, weight, height, activity, goal):
     if gender == "female":
         bmr = 10 * weight + 6.25 * height - 5 * age - 161
     else:
         bmr = 10 * weight + 6.25 * height - 5 * age + 5
     tdee = bmr * activity
-    goal_delta = GOALS[goal][1]
-    calories = round(tdee + goal_delta)
+    calories = round(tdee + GOALS[goal][1])
     protein = round(weight * 1.7)
     fat = round(calories * 0.28 / 9)
     carbs = round((calories - protein * 4 - fat * 9) / 4)
-    return {
-        "bmr": round(bmr), "tdee": round(tdee),
-        "calories": calories, "protein": protein,
-        "fat": fat, "carbs": carbs,
-    }
+    return {"bmr": round(bmr), "tdee": round(tdee),
+            "calories": calories, "protein": protein, "fat": fat, "carbs": carbs}
 
 def build_meal_plan(calories, protein, fat, carbs):
     dist = {
@@ -264,31 +416,62 @@ def build_meal_plan(calories, protein, fat, carbs):
         "🍎 Перекус 2": (0.10, 0.15, 0.10, 0.10),
         "🌙 Вечеря":    (0.15, 0.10, 0.15, 0.15),
     }
-    lines = ["<b>📋 Розподіл по прийомах їжі:</b>\n"]
+    lines = []
     for meal, (kc, pr, ft, cb) in dist.items():
         lines.append(
-            f"{meal}\n"
-            f"  Калорії: {round(calories*kc)} ккал\n"
-            f"  Білок:   {round(protein*pr)} г\n"
-            f"  Жири:    {round(fat*ft)} г\n"
-            f"  Вуглев.: {round(carbs*cb)} г\n"
+            f"{meal}: {round(calories*kc)} ккал "
+            f"| Б:{round(protein*pr)}г Ж:{round(fat*ft)}г В:{round(carbs*cb)}г"
         )
     return "\n".join(lines)
 
+def generate_menu_for_user(user, day_num, plan, week_rotation=1):
+    # Rotation: week 1-7 = menu 1, 8-14 = menu 2, 15-21 = menu 3, 22-28 = menu 4
+    menu_week = ((week_rotation - 1) % 4) + 1
+    menu = MENU_ROTATION.get(menu_week, MENU_ROTATION[1])
+    day = menu.get(day_num, menu[1])
+    calories = user.get("calories", 2000)
+    goal = user.get("goal", "maintain")
+    goal_label = GOALS.get(goal, ("Підтримка",))[0]
+
+    text = f"🍽 <b>Меню на {day['day']}</b>\n"
+    text += f"🎯 Ціль: {goal_label} | 🔥 {calories} ккал/день\n\n"
+
+    text += f"🌅 <b>Сніданок</b>\n{day['breakfast'][0]}\n~{day['breakfast'][1]} ккал\n\n"
+    text += f"☀️ <b>Обід</b>\n{day['lunch'][0]}\n~{day['lunch'][1]} ккал\n\n"
+    text += f"🌙 <b>Вечеря</b>\n{day['dinner'][0]}\n~{day['dinner'][1]} ккал\n\n"
+
+    if plan in ("premium", "vip"):
+        text += f"🍎 <b>Перекус 1</b>\n{day['snack1'][0]}\n~{day['snack1'][1]} ккал\n\n"
+        text += f"🍎 <b>Перекус 2</b>\n{day['snack2'][0]}\n~{day['snack2'][1]} ккал\n\n"
+
+    total = day['breakfast'][1] + day['lunch'][1] + day['dinner'][1]
+    if plan in ("premium", "vip"):
+        total += day['snack1'][1] + day['snack2'][1]
+
+    text += f"📊 Всього: ~{total} ккал з {calories} ккал\n"
+    diff = calories - total
+    if diff > 0:
+        text += f"✅ Залишок: {diff} ккал — можна додати перекус\n"
+    elif diff < -50:
+        text += f"⚠️ Трохи вище норми на {abs(diff)} ккал\n"
+    else:
+        text += f"✅ Ідеальний баланс!\n"
+
+    return text
+
+# ─── КЛАВІАТУРИ ────────────────────────────────────────────────────
 def kb_main_menu(plan="free"):
     b = InlineKeyboardBuilder()
     b.button(text="📊 Розрахувати КБЖУ", callback_data="kbju_start")
-    b.button(text="🍽 Мій план харчування", callback_data="my_plan")
+    b.button(text="🍽 Меню на сьогодні", callback_data="menu_today")
     b.button(text="🧠 Тест поведінки", callback_data="behavior_test")
     b.button(text="📚 Контент тижня", callback_data="weekly_content")
     if plan in ("premium", "vip"):
-        b.button(text="📸 Аналіз тарілки", callback_data="plate_analysis")
-    if plan == "vip":
-        b.button(text="🤖 ШІ-нутриціолог", callback_data="ai_nutritionist")
-    b.button(text="📅 Трекер їжі", callback_data="tracker")
+        b.button(text="📅 Трекер їжі", callback_data="tracker")
+        b.button(text="📈 Мій прогрес", callback_data="my_progress")
     b.button(text="💎 Тарифи", callback_data="plans")
     b.button(text="👤 Мій профіль", callback_data="my_profile")
-    b.adjust(2, 2, 2, 2, 1)
+    b.adjust(2, 2, 2, 2)
     return b.as_markup()
 
 def kb_plans():
@@ -343,23 +526,33 @@ def kb_admin():
     b.adjust(2)
     return b.as_markup()
 
+def kb_menu_actions(plan):
+    b = InlineKeyboardBuilder()
+    b.button(text="📅 Меню на тиждень", callback_data="menu_week")
+    if plan in ("premium", "vip"):
+        b.button(text="🔄 Змінити меню", callback_data="menu_change")
+    b.button(text="➡️ Наступний день", callback_data="menu_next")
+    b.button(text="🏠 Головне меню", callback_data="main_menu")
+    b.adjust(1)
+    return b.as_markup()
+
+def kb_after_kbju(plan):
+    b = InlineKeyboardBuilder()
+    b.button(text="🍽 Отримати меню", callback_data="menu_today")
+    if plan == "free":
+        b.button(text="🔓 Розблокувати повний план", callback_data="plans")
+    b.button(text="🧠 Пройти тест поведінки", callback_data="behavior_test")
+    b.button(text="🏠 Головне меню", callback_data="main_menu")
+    b.adjust(1)
+    return b.as_markup()
+
 def kb_behavior_test(q_num):
     options = {
-        0: [("👍 Так, часто", "bt_yes"),
-            ("🤔 Іноді", "bt_sometimes"),
-            ("👎 Рідко", "bt_no")],
-        1: [("🟢 Наростає поступово", "bt_gradual"),
-            ("🔴 Виникає раптово", "bt_sudden"),
-            ("⚪ По-різному", "bt_varies")],
-        2: [("😔 Від стресу", "bt_stress"),
-            ("😴 Від нудьги", "bt_bored"),
-            ("😋 Від запаху/вигляду", "bt_sensory")],
-        3: [("✅ Так, легко", "bt_easy"),
-            ("⚠️ Важко, але можу", "bt_hard"),
-            ("❌ Не можу зупинитись", "bt_cant")],
-        4: [("😔 Часто соромлюсь", "bt_shame"),
-            ("😌 Іноді", "bt_sometimes2"),
-            ("😊 Рідко", "bt_never")],
+        0: [("👍 Так, часто", "bt_yes"), ("🤔 Іноді", "bt_sometimes"), ("👎 Рідко", "bt_no")],
+        1: [("🟢 Наростає поступово", "bt_gradual"), ("🔴 Раптово", "bt_sudden"), ("⚪ По-різному", "bt_varies")],
+        2: [("😔 Від стресу", "bt_stress"), ("😴 Від нудьги", "bt_bored"), ("😋 Від запаху/вигляду", "bt_sensory")],
+        3: [("✅ Легко", "bt_easy"), ("⚠️ Важко, але можу", "bt_hard"), ("❌ Не можу", "bt_cant")],
+        4: [("😔 Часто соромлюсь", "bt_shame"), ("😌 Іноді", "bt_sometimes2"), ("😊 Рідко", "bt_never")],
     }
     b = InlineKeyboardBuilder()
     for text, cb in options.get(q_num, []):
@@ -385,31 +578,150 @@ def analyze_behavior(answers):
     if "bt_cant" in answers: score += 3
     if "bt_shame" in answers: score += 2
     if score <= 3:
-        return (
-            "🟢 <b>Гомеостатичний тип</b>\n\n"
-            "Харчування за фізичним голодом.\n"
-            "Насичення відчувається добре.\n\n"
-            "✅ Продовжуй слухати тіло\n"
-            "✅ Стеж за балансом макронутрієнтів\n"
-            "✅ Перевір КБЖУ /kbju"
-        )
+        return ("🟢", "Гомеостатичний тип",
+            "Харчування переважно за фізичним голодом — це відмінний результат!\n\n"
+            "✅ Добре відчуваєш насичення\n"
+            "✅ Рідко їси без причини\n"
+            "✅ Маєш здоровий контакт з тілом\n\n"
+            "Наступний крок — збалансувати раціон по КБЖУ і меню.")
     elif score <= 7:
-        return (
-            "🟡 <b>Гедонічний тип</b>\n\n"
-            "Іноді їжа від емоцій або задоволення.\n\n"
-            "🔸 Визначай рівень голоду (шкала 1-10)\n"
-            "🔸 Знайди альтернативи для емоцій\n"
-            "🔸 Регулярні прийоми їжі зменшать тягу"
-        )
+        return ("🟡", "Гедонічний тип",
+            "Іноді їжа від емоцій або задоволення — це нормально!\n\n"
+            "🔸 Визначай рівень голоду (шкала 1-10) перед їжею\n"
+            "🔸 Знайди альтернативи для емоційного заспокоєння\n"
+            "🔸 Регулярні прийоми по меню зменшать тягу\n\n"
+            "Готовий меню допоможе уникнути хаотичного харчування.")
     else:
-        return (
-            "🔴 <b>Дисрегульований тип</b>\n\n"
-            "Харчування часто некероване.\n\n"
+        return ("🔴", "Дисрегульований тип",
+            "Харчування часто некероване — тілу потрібна структура.\n\n"
             "🔴 Регулярні прийоми кожні 3-4 год\n"
-            "🔴 Достатня калорійність\n"
-            "🔴 Якісний сон 7-9 годин\n"
-            "🔴 Зниження стресу"
-        )
+            "🔴 Готовий план меню — твій головний інструмент\n"
+            "🔴 Достатня калорійність (не менше 1200-1500 ккал)\n"
+            "🔴 Якісний сон 7-9 годин\n\n"
+            "Структуроване меню — перший крок до балансу.")
+
+WEEKLY_CONTENT = {
+    1: {"theme": "🌱 Основи усвідомленого харчування", "posts": [
+        {"day": 1, "title": "Що таке усвідомлене харчування?",
+         "text": "🧠 <b>Тиждень 1 · День 1</b>\n\n<b>Усвідомлене харчування — це не дієта.</b>\n\nЦе вміння чути своє тіло:\n→ їсти, коли є фізичний голод\n→ зупинятися при насиченні\n→ обирати їжу, яка дає енергію і задоволення\n\nФормула:\nЇм за голодом + зупиняюся за насиченням + не думаю про їжу між прийомами 🌿"},
+        {"day": 3, "title": "Шкала голоду-ситості",
+         "text": "🌡 <b>Тиждень 1 · День 3</b>\n\n<b>Шкала 1-10:</b>\n\n1-3 — Голод, треба їсти\n4 ← <b>починай їсти тут</b>\n5-6 — Легка ситість ← <b>зупиняйся тут</b>\n7-10 — Переїв\n\n<b>Практика:</b> перевіряй рівень перед кожним прийомом їжі 🌿"},
+        {"day": 5, "title": "Ідеальна тарілка",
+         "text": "🍽 <b>Тиждень 1 · День 5</b>\n\n🥗 1/2 — різнокольорові овочі\n🍗 1/4 — білок\n🌾 1/4 — складні вуглеводи\n🫒 невелика кількість — корисні жири\n\nЦя формула лежить в основі твого меню в боті 🌿"},
+    ]},
+    2: {"theme": "🥗 Макронутрієнти: Білок", "posts": [
+        {"day": 1, "title": "Навіщо нам білок?",
+         "text": "💪 <b>Тиждень 2 · День 1</b>\n\nДефіцит білка:\n→ випадіння волосся\n→ збої в гормональній системі\n→ зниження імунітету\n\nНорма: 1.4-2.0 г на кг ваги\nТвоя норма вже розрахована в профілі 📊"},
+        {"day": 3, "title": "Джерела білку",
+         "text": "🐟 <b>Тиждень 2 · День 3</b>\n\n<b>НЕЖИРНИЙ</b> ✅\nКурка, індичка, тріска, яєчний білок, сир 2%\n\n<b>ЖИРНИЙ</b> ✅\nЛосось, яйця, скумбрія, сир 9%\n\nОбидва варіанти є в твоєму меню 💚"},
+    ]},
+    3: {"theme": "🧈 Макронутрієнти: Жири", "posts": [
+        {"day": 1, "title": "Жири — не ворог",
+         "text": "🥑 <b>Тиждень 3 · День 1</b>\n\nЖири — основа гормонів і мозку.\n\nКорисні жири:\n✅ Оливкова олія, авокадо, горіхи\n✅ Лосось, скумбрія (Омега-3)\n\nВсе це вже включено в твоє меню 🌿"},
+    ]},
+    4: {"theme": "🌾 Вуглеводи", "posts": [
+        {"day": 1, "title": "Складні вуглеводи — твоя енергія",
+         "text": "⚡ <b>Тиждень 4 · День 1</b>\n\nСкладні вуглеводи дають тривалу енергію:\n🌾 Гречка, овес, рис, булгур\n🫘 Бобові\n🍠 Батат\n\nПрості вуглеводи (цукор, солодощі) — в мінімальній кількості 💚"},
+    ]},
+    5: {"theme": "🧠 Харчова поведінка", "posts": [
+        {"day": 1, "title": "3 типи голоду",
+         "text": "🧠 <b>Тиждень 5 · День 1</b>\n\n🟢 Фізичний — наростає поступово, їж!\n🟡 Гедонічний — від емоцій, зроби паузу\n🔴 Дисрегульований — без насичення, потрібна структура\n\nТвій результат тесту вже в профілі 🌿"},
+    ]},
+    6: {"theme": "😴 Сон і харчування", "posts": [
+        {"day": 1, "title": "Як сон впливає на вагу",
+         "text": "😴 <b>Тиждень 6 · День 1</b>\n\nПри нестачі сну зростає грелін (голод) і знижується лептин (ситість).\n\n✅ 7-9 годин сну\n✅ Стабільний час\n✅ Вечеря за 2-3 год до сну 🌿"},
+    ]},
+    7: {"theme": "🦠 Мікробіом", "posts": [
+        {"day": 1, "title": "Мікробіом і апетит",
+         "text": "🦠 <b>Тиждень 7 · День 1</b>\n\n90% серотоніну — в кишківнику!\n\nЩо підтримує:\n✅ Йогурт, кефір, квашена капуста\n✅ Клітковина щодня\n✅ Різноманітне харчування 💚"},
+    ]},
+    8: {"theme": "🍽 Сніданок", "posts": [
+        {"day": 1, "title": "Ідеальний сніданок",
+         "text": "🌅 <b>Тиждень 8 · День 1</b>\n\nІдеальний сніданок:\n1/4 білок + 1/4 жири + 1/8 вуглеводи + 1/2 овочі/ягоди\n\nУ твоєму меню кожен сніданок вже збалансований саме так 🌿"},
+    ]},
+    9: {"theme": "☀️ Обід", "posts": [
+        {"day": 1, "title": "Формула обіду",
+         "text": "☀️ <b>Тиждень 9 · День 1</b>\n\n1/4 білок + 1/4 вуглеводи (найбільше за день) + мінімум жирів + 1/2 овочі\n\nОбід — найкращий час для складних вуглеводів 💚"},
+    ]},
+    10: {"theme": "🌙 Вечеря", "posts": [
+        {"day": 1, "title": "Легка вечеря",
+         "text": "🌙 <b>Тиждень 10 · День 1</b>\n\n1/3 нежирний білок + 1/6 складні вуглеводи + 1/2 овочі\n\nВечеря — мінімум жирів і вуглеводів 🌿"},
+    ]},
+    11: {"theme": "💧 Гідратація", "posts": [
+        {"day": 1, "title": "Вода і обмін речовин",
+         "text": "💧 <b>Тиждень 11 · День 1</b>\n\nНорма: 30-35 мл на кг ваги\n\nОзнаки нестачі: втома, хибний голод, запори\n\nЛайфхак: склянка води перед їжею зменшить порцію 💚"},
+    ]},
+    12: {"theme": "🏋️ Харчування і тренування", "posts": [
+        {"day": 1, "title": "До та після тренування",
+         "text": "🏋️ <b>Тиждень 12 · День 1</b>\n\nДо (за 1-2 год): складні вуглеводи + білок\nПісля (30-60 хв): білок + прості вуглеводи\n\nВуглеводи після тренування відновлюють глікоген 💪"},
+    ]},
+    13: {"theme": "🥗 Клітковина", "posts": [
+        {"day": 1, "title": "25-35г клітковини на день",
+         "text": "🌿 <b>Тиждень 13 · День 1</b>\n\nДжерела: овочі, фрукти, крупи, бобові\n\nКлітковина годує бактерії, знижує цукор, дає ситість\n\nТвоє меню вже містить потрібну кількість 💚"},
+    ]},
+    14: {"theme": "🍫 Солодке без шкоди", "posts": [
+        {"day": 1, "title": "Десерт без провини",
+         "text": "🍫 <b>Тиждень 14 · День 1</b>\n\nСолодке після сніданку або обіду — норма!\n\nЗаборона → зрив → провина\nДозвіл → задоволення → контроль\n\nВ меню є місце для маленьких радостей 🌿"},
+    ]},
+    15: {"theme": "⚖️ Управління вагою", "posts": [
+        {"day": 1, "title": "Дефіцит без стресу",
+         "text": "⚖️ <b>Тиждень 15 · День 1</b>\n\nБезпечний дефіцит: 300-500 ккал від норми\nТемп: 0.5-1 кг на тиждень\n\nТвоє меню вже враховує твою ціль 📊"},
+    ]},
+    16: {"theme": "⚖️ Гормони", "posts": [
+        {"day": 1, "title": "Гормони і харчування",
+         "text": "⚖️ <b>Тиждень 16 · День 1</b>\n\nІнсулін, лептин, кортизол — всі залежать від раціону.\n\nЗбалансована тарілка + регулярні прийоми = гормональний баланс 🌿"},
+    ]},
+    17: {"theme": "☀️ Вітамін D", "posts": [
+        {"day": 1, "title": "Дефіцит D у більшості",
+         "text": "☀️ <b>Тиждень 17 · День 1</b>\n\nДефіцит → втома, депресія, слабкий імунітет\n\nДжерела: сонце, жирна риба, яйця, D3\nОптимум: 50-80 нг/мл 💚"},
+    ]},
+    18: {"theme": "💊 Залізо", "posts": [
+        {"day": 1, "title": "Залізодефіцит",
+         "text": "🩸 <b>Тиждень 18 · День 1</b>\n\nОзнаки: втома, блідість, випадіння волосся\n\nДжерела: червоне м'ясо, шпинат, гречка\nЇж з вітаміном С — засвоєння +50% 🌿"},
+    ]},
+    19: {"theme": "😤 Стрес і кортизол", "posts": [
+        {"day": 1, "title": "Кортизол і вага",
+         "text": "😤 <b>Тиждень 19 · День 1</b>\n\nКортизол → тяга до солодкого, жир на животі\n\nЩо допомагає:\n✅ Сон 7-9 год\n✅ Регулярне харчування по меню\n✅ Прогулянки і рух 🌿"},
+    ]},
+    20: {"theme": "🍱 Meal Prep", "posts": [
+        {"day": 1, "title": "Готовлю раз на тиждень",
+         "text": "📦 <b>Тиждень 20 · День 1</b>\n\nMeal Prep за 2 години:\n1. Відвари 3 крупи\n2. Запечи білок\n3. Наріж овочі\n\nТвоє меню в боті вже є готовий план на тиждень 💚"},
+    ]},
+    21: {"theme": "🎯 Харчові цілі", "posts": [
+        {"day": 1, "title": "SMART-цілі",
+         "text": "🎯 <b>Тиждень 21 · День 1</b>\n\nНе: хочу харчуватися здоровіше\nТак: їстиму 5 порцій овочів щодня 4 тижні\n\nТвоя ціль вже встановлена в КБЖУ 🌿"},
+    ]},
+    22: {"theme": "🧪 Аналізи", "posts": [
+        {"day": 1, "title": "Які аналізи здати",
+         "text": "🧪 <b>Тиждень 22 · День 1</b>\n\n🩸 Загальний аналіз крові\n⚗️ Глюкоза, холестерин\n🦋 ТТГ (щитовидна)\n☀️ Вітамін D, B12\n\nЗдавай раз на 6 місяців 💚"},
+    ]},
+    23: {"theme": "🌍 Їжа поза домом", "posts": [
+        {"day": 1, "title": "Кафе без стресу",
+         "text": "🍽 <b>Тиждень 23 · День 1</b>\n\n✅ Шукай білок в меню\n✅ Проси соус окремо\n✅ Заміни картоплю фрі на овочі\n\nПринципи твого меню працюють скрізь 🌿"},
+    ]},
+    24: {"theme": "📱 Трекінг", "posts": [
+        {"day": 1, "title": "Рахувати калорії?",
+         "text": "📱 <b>Тиждень 24 · День 1</b>\n\nКоли корисно: хочеш зрозуміти раціон\nКоли шкідливо: викликає тривогу\n\nАльтернатива: метод тарілки + трекер в боті 💚"},
+    ]},
+    25: {"theme": "🏃 Енергія", "posts": [
+        {"day": 1, "title": "Чому немає енергії?",
+         "text": "⚡ <b>Тиждень 25 · День 1</b>\n\nПричини: переїдання, прості вуглеводи, мало білку\n\nЩо дає енергію:\n✅ Збалансована тарілка по меню\n✅ Регулярні прийоми\n✅ 1.5-2л води 🌿"},
+    ]},
+    26: {"theme": "🌟 Підтримка ваги", "posts": [
+        {"day": 1, "title": "Як не зірватися",
+         "text": "🌟 <b>Тиждень 26 · День 1</b>\n\nСистема звичок сильніша за силу волі.\n\n✅ Дотримуйся меню\n✅ Регулярно перевіряй прогрес\n✅ Повертайся до базового протоколу 💚"},
+    ]},
+    27: {"theme": "🎁 Свята", "posts": [
+        {"day": 1, "title": "Свята без зривів",
+         "text": "🎉 <b>Тиждень 27 · День 1</b>\n\n✅ Не голодуй до святкового столу\n✅ Починай з овочів\n✅ Їж повільно\n✅ Повернись до меню наступного ранку 🌿"},
+    ]},
+    28: {"theme": "🏆 Підсумок", "posts": [
+        {"day": 1, "title": "28 тижнів — ти зробив це!",
+         "text": "🏆 <b>Тиждень 28 · Фінал</b>\n\nТи пройшов весь курс NutriSense!\n\n✅ Розумієш своє тіло\n✅ Знаєш свої нутрієнти\n✅ Маєш систему харчування\n\n<b>Харчування — це не дієта. Це твій спосіб жити.</b>\n\nNutriSense завжди поруч 🌿💚"},
+    ]},
+}
+
+# ─── РОУТЕР ────────────────────────────────────────────────────────
 router = Router()
 
 @router.message(CommandStart())
@@ -421,19 +733,17 @@ async def cmd_start(msg: Message):
     )
     user = await get_user(msg.from_user.id)
     plan = user.get("plan", "free") if user else "free"
-    text = (
+    await msg.answer(
         "🌿 <b>Вітаю в NutriSense!</b>\n\n"
-        "Я твій особистий нутриціолог у Telegram.\n\n"
+        "Я допоможу тобі харчуватися збалансовано — без дієт і заборон.\n\n"
         "Що я вмію:\n"
-        "📊 Точно розраховую КБЖУ за Міффліним\n"
-        "🍽 Складаю план харчування по прийомах\n"
+        "📊 Розраховую точну норму КБЖУ\n"
+        "🍽 Складаю персональне меню на тиждень\n"
         "🧠 Визначаю тип харчової поведінки\n"
-        "📚 Надсилаю контент 28 тижнів\n"
-        "📸 Аналізую фото тарілки (Premium)\n"
-        "🤖 Відповідаю на питання (VIP)\n\n"
-        "<b>Перший розрахунок КБЖУ — безкоштовно!</b>"
+        "📚 Навчаю нутриціології 28 тижнів\n\n"
+        "<b>Почни з розрахунку КБЖУ — це безкоштовно!</b>",
+        reply_markup=kb_main_menu(plan)
     )
-    await msg.answer(text, reply_markup=kb_main_menu(plan))
 
 @router.message(Command("menu"))
 async def cmd_menu(msg: Message):
@@ -450,18 +760,13 @@ async def cmd_admin(msg: Message):
 @router.message(Command("kbju"))
 async def cmd_kbju(msg: Message, state: FSMContext):
     await state.set_state(KBJUState.waiting_gender)
-    await msg.answer(
-        "📊 <b>Розрахунок КБЖУ</b>\n\nОбери стать:",
-        reply_markup=kb_gender()
-    )
+    await msg.answer("📊 <b>Розрахунок КБЖУ</b>\n\nОбери стать:", reply_markup=kb_gender())
 
+# ─── КБЖУ КАЛЬКУЛЯТОР ──────────────────────────────────────────────
 @router.callback_query(F.data == "kbju_start")
 async def cb_kbju_start(cq: CallbackQuery, state: FSMContext):
     await state.set_state(KBJUState.waiting_gender)
-    await cq.message.edit_text(
-        "📊 <b>Розрахунок КБЖУ</b>\n\nОбери стать:",
-        reply_markup=kb_gender()
-    )
+    await cq.message.edit_text("📊 <b>Розрахунок КБЖУ</b>\n\nОбери стать:", reply_markup=kb_gender())
     await cq.answer()
 
 @router.callback_query(F.data.startswith("gender_"), KBJUState.waiting_gender)
@@ -504,10 +809,7 @@ async def kbju_height(msg: Message, state: FSMContext):
             raise ValueError
         await state.update_data(height=height)
         await state.set_state(KBJUState.waiting_activity)
-        await msg.answer(
-            "Обери рівень <b>активності</b>:",
-            reply_markup=kb_activity()
-        )
+        await msg.answer("Обери рівень <b>активності</b>:", reply_markup=kb_activity())
     except ValueError:
         await msg.answer("⚠️ Введи коректний зріст (100-250 см):")
 
@@ -537,67 +839,272 @@ async def kbju_goal(cq: CallbackQuery, state: FSMContext):
         calories=result["calories"], protein=result["protein"],
         fat=result["fat"], carbs=result["carbs"],
     )
-    meal_plan = build_meal_plan(
-        result["calories"], result["protein"],
-        result["fat"], result["carbs"]
-    )
-    goal_label = GOALS[goal][0]
-    gender_label = "Жінка" if data["gender"] == "female" else "Чоловік"
-    text = (
-        f"✅ <b>Твій розрахунок КБЖУ</b>\n\n"
-        f"👤 {gender_label}, {data['age']} р., "
-        f"{data['weight']} кг, {data['height']} см\n"
-        f"🎯 {goal_label}\n\n"
-        f"🔥 <b>BMR:</b> {result['bmr']} ккал\n"
-        f"⚡ <b>TDEE:</b> {result['tdee']} ккал\n"
-        f"🎯 <b>Норма:</b> {result['calories']} ккал\n\n"
-        f"🥩 Білок: {result['protein']} г\n"
-        f"🧈 Жири: {result['fat']} г\n"
-        f"🌾 Вуглеводи: {result['carbs']} г\n\n"
-        f"{meal_plan}"
-    )
     user = await get_user(cq.from_user.id)
     plan = user.get("plan", "free") if user else "free"
-    await cq.message.edit_text(text, reply_markup=kb_main_menu(plan))
-    await cq.answer("✅ Готово!")
+    goal_label = GOALS[goal][0]
+    gender_label = "Жінка" if data["gender"] == "female" else "Чоловік"
+
+    text = (
+        f"✅ <b>Твій результат КБЖУ</b>\n\n"
+        f"👤 {gender_label}, {data['age']} р., {data['weight']} кг\n"
+        f"🎯 Ціль: {goal_label}\n\n"
+        f"🔥 Норма калорій: <b>{result['calories']} ккал/день</b>\n"
+        f"🥩 Білок: <b>{result['protein']} г</b>\n"
+        f"🧈 Жири: <b>{result['fat']} г</b>\n"
+        f"🌾 Вуглеводи: <b>{result['carbs']} г</b>\n\n"
+    )
+
+    if plan == "free":
+        text += (
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "💡 <b>Що далі?</b>\n\n"
+            "Знати норму КБЖУ — це перший крок.\n"
+            "Але без готового меню більшість повертається до старих звичок.\n\n"
+            "З підпискою <b>Start</b> ти отримаєш:\n"
+            "🍽 Готове меню на кожен день тижня\n"
+            "📚 28 тижнів нутриціологічних знань\n"
+            "🧠 Персональний аналіз харчової поведінки\n\n"
+            "👇 Обери дію:"
+        )
+    else:
+        text += (
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "🍽 Меню вже готове під твої показники!\n"
+            "👇 Обери дію:"
+        )
+
+    await cq.message.edit_text(text, reply_markup=kb_after_kbju(plan))
+    await cq.answer("✅ Розрахунок готовий!")
+
+# ─── МЕНЮ ──────────────────────────────────────────────────────────
+@router.callback_query(F.data == "menu_today")
+async def cb_menu_today(cq: CallbackQuery):
+    user = await get_user(cq.from_user.id)
+    if not has_access(user, "start"):
+        await cq.message.edit_text(
+            "🔒 <b>Меню доступне з тарифу Start</b>\n\n"
+            "Отримай готове меню на кожен день тижня,\n"
+            "складене під твої показники КБЖУ.\n\n"
+            "Вартість: всього <b>199 грн/міс</b>",
+            reply_markup=kb_plans()
+        )
+        await cq.answer()
+        return
+
+    if not user.get("calories"):
+        await cq.answer("⚠️ Спочатку розрахуй КБЖУ!", show_alert=True)
+        return
+
+    plan = user.get("plan", "free")
+    day_num = user.get("menu_day", 1) or 1
+    today_weekday = datetime.now().weekday() + 1
+    if today_weekday > 7:
+        today_weekday = 1
+
+    week_num = user.get('week', 1) or 1
+    menu_text = generate_menu_for_user(user, today_weekday, plan, week_num)
+    await cq.message.edit_text(menu_text, reply_markup=kb_menu_actions(plan))
+    await cq.answer()
+
+@router.callback_query(F.data == "menu_week")
+async def cb_menu_week(cq: CallbackQuery):
+    user = await get_user(cq.from_user.id)
+    if not has_access(user, "start"):
+        await cq.answer("🔒 Доступно з Start", show_alert=True)
+        return
+
+    plan = user.get("plan", "free")
+    text = "📅 <b>Меню на тиждень</b>\n\n"
+    for day_num, day_data in MENU_BASE.items():
+        text += f"<b>{day_data['day']}</b>\n"
+        text += f"🌅 {day_data['breakfast'][0]}\n"
+        text += f"☀️ {day_data['lunch'][0]}\n"
+        text += f"🌙 {day_data['dinner'][0]}\n"
+        if plan in ("premium", "vip"):
+            text += f"🍎 {day_data['snack1'][0]}\n"
+        text += "\n"
+
+    b = InlineKeyboardBuilder()
+    if plan in ("premium", "vip"):
+        b.button(text="🔄 Змінити меню", callback_data="menu_change")
+    b.button(text="🏠 Головне меню", callback_data="main_menu")
+    b.adjust(1)
+
+    await cq.message.edit_text(text, reply_markup=b.as_markup())
+    await cq.answer()
+
+@router.callback_query(F.data == "menu_next")
+async def cb_menu_next(cq: CallbackQuery):
+    user = await get_user(cq.from_user.id)
+    if not has_access(user, "start"):
+        await cq.answer("🔒 Доступно з Start", show_alert=True)
+        return
+
+    current_day = datetime.now().weekday() + 1
+    next_day = current_day + 1 if current_day < 7 else 1
+    plan = user.get("plan", "free")
+
+    week_num2 = user.get('week', 1) or 1
+    menu_text = generate_menu_for_user(user, next_day, plan, week_num2)
+    day_name = MENU_BASE[next_day]["day"]
+
+    await cq.message.edit_text(
+        f"➡️ <b>Меню на завтра ({day_name})</b>\n\n" + menu_text,
+        reply_markup=kb_menu_actions(plan)
+    )
+    await cq.answer()
+
+@router.callback_query(F.data == "menu_change")
+async def cb_menu_change(cq: CallbackQuery):
+    user = await get_user(cq.from_user.id)
+    if not has_access(user, "premium"):
+        await cq.message.edit_text(
+            "🔒 <b>Зміна меню доступна з Premium</b>\n\n"
+            "З Premium ти можеш:\n"
+            "🔄 Змінити будь-яку страву\n"
+            "🍱 Отримати альтернативні варіанти\n"
+            "📅 Налаштувати меню під свої смаки\n\n"
+            "Вартість: <b>349 грн/міс</b>",
+            reply_markup=kb_plans()
+        )
+        await cq.answer()
+        return
+
+    b = InlineKeyboardBuilder()
+    for day_num, day_data in MENU_BASE.items():
+        b.button(text=f"📅 {day_data['day']}", callback_data=f"menu_show_{day_num}")
+    b.button(text="◀️ Назад", callback_data="menu_today")
+    b.adjust(2)
+
+    await cq.message.edit_text(
+        "🔄 <b>Оберіть день для перегляду меню:</b>\n\n"
+        "Можеш переглянути меню будь-якого дня тижня",
+        reply_markup=b.as_markup()
+    )
+    await cq.answer()
+
+@router.callback_query(F.data.startswith("menu_show_"))
+async def cb_menu_show_day(cq: CallbackQuery):
+    user = await get_user(cq.from_user.id)
+    day_num = int(cq.data.replace("menu_show_", ""))
+    plan = user.get("plan", "free")
+    week_num3 = user.get('week', 1) or 1
+    menu_text = generate_menu_for_user(user, day_num, plan, week_num3)
+    await cq.message.edit_text(menu_text, reply_markup=kb_menu_actions(plan))
+    await cq.answer()
+
+# ─── ПРОГРЕС ────────────────────────────────────────────────────────
+@router.callback_query(F.data == "my_progress")
+async def cb_my_progress(cq: CallbackQuery):
+    user = await get_user(cq.from_user.id)
+    if not has_access(user, "premium"):
+        await cq.answer("🔒 Доступно з Premium", show_alert=True)
+        return
+
+    week = user.get("week", 1) or 1
+    joined = user.get("joined_at", "")[:10] if user.get("joined_at") else "—"
+    plan = PLANS.get(user.get("plan", "free"), {}).get("name", "Free")
+    until = user.get("plan_until", "")[:10] if user.get("plan_until") else "—"
+
+    days_on_plan = 0
+    if user.get("joined_at"):
+        try:
+            joined_dt = datetime.strptime(user["joined_at"][:10], "%Y-%m-%d")
+            days_on_plan = (datetime.now() - joined_dt).days
+        except Exception:
+            pass
+
+    text = (
+        f"📈 <b>Мій прогрес</b>\n\n"
+        f"📅 В NutriSense: {days_on_plan} днів\n"
+        f"📚 Тиждень навчання: {week}/28\n"
+        f"💎 Тариф: {plan} (до {until})\n\n"
+        f"🎯 Ціль: {GOALS.get(user.get('goal','maintain'), ('—',))[0]}\n"
+        f"🔥 Норма: {user.get('calories', '—')} ккал/день\n\n"
+    )
+
+    progress_bar = "🟩" * min(week, 10) + "⬜" * (10 - min(week, 10))
+    text += f"Прогрес курсу: {progress_bar}\n{week}/28 тижнів\n\n"
+
+    if week < 28:
+        text += f"💡 Залишилось {28 - week} тижнів до завершення курсу!"
+    else:
+        text += "🏆 Курс завершено! Ти молодець!"
+
+    b = InlineKeyboardBuilder()
+    b.button(text="🍽 Меню на сьогодні", callback_data="menu_today")
+    b.button(text="🏠 Головне меню", callback_data="main_menu")
+    b.adjust(1)
+
+    await cq.message.edit_text(text, reply_markup=b.as_markup())
+    await cq.answer()
+
+# ─── ТЕСТ ПОВЕДІНКИ ─────────────────────────────────────────────────
+@router.callback_query(F.data == "behavior_test")
+async def cb_behavior_test(cq: CallbackQuery, state: FSMContext):
+    await state.set_state(BehaviorTestState.waiting_answer)
+    await state.update_data(answers=[], q_num=0)
+    await cq.message.edit_text(
+        "🧠 <b>Тест харчової поведінки</b>\n\n"
+        "5 питань — і ти дізнаєшся свій тип харчової поведінки "
+        "та отримаєш персональні рекомендації.\n\n"
+        f"{BEHAVIOR_QUESTIONS[0]}",
+        reply_markup=kb_behavior_test(0)
+    )
+    await cq.answer()
+
+@router.callback_query(BehaviorTestState.waiting_answer, F.data.startswith("bt_"))
+async def cb_behavior_answer(cq: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    answers = data.get("answers", [])
+    q_num = data.get("q_num", 0)
+    answers.append(cq.data)
+    q_num += 1
+
+    if q_num >= len(BEHAVIOR_QUESTIONS):
+        await state.clear()
+        emoji, type_name, description = analyze_behavior(answers)
+        user = await get_user(cq.from_user.id)
+        plan = user.get("plan", "free") if user else "free"
+
+        text = (
+            f"{emoji} <b>Результат: {type_name}</b>\n\n"
+            f"{description}\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+        )
+
+        if plan == "free":
+            text += (
+                "💡 <b>Наступний крок:</b>\n\n"
+                "Знаючи свій тип — важливо мати структуру харчування.\n"
+                "Готове меню на тиждень допоможе уникнути хаосу.\n\n"
+                "Спробуй <b>Start</b> — 199 грн/міс"
+            )
+        else:
+            text += "🍽 Твоє меню вже враховує ці особливості!"
+
+        b = InlineKeyboardBuilder()
+        b.button(text="🍽 Меню на сьогодні", callback_data="menu_today")
+        if plan == "free":
+            b.button(text="🔓 Отримати меню", callback_data="plans")
+        b.button(text="🏠 Головне меню", callback_data="main_menu")
+        b.adjust(1)
+
+        await cq.message.edit_text(text, reply_markup=b.as_markup())
+    else:
+        await state.update_data(answers=answers, q_num=q_num)
+        await cq.message.edit_text(
+            f"<b>Питання {q_num+1}/5</b>\n\n{BEHAVIOR_QUESTIONS[q_num]}",
+            reply_markup=kb_behavior_test(q_num)
+        )
+    await cq.answer()
+
+# ─── ТАРИФИ І ОПЛАТА ───────────────────────────────────────────────
 @router.callback_query(F.data == "main_menu")
 async def cb_main_menu(cq: CallbackQuery):
     user = await get_user(cq.from_user.id)
     plan = user.get("plan", "free") if user else "free"
-    await cq.message.edit_text(
-        "🏠 <b>Головне меню NutriSense</b>",
-        reply_markup=kb_main_menu(plan)
-    )
-    await cq.answer()
-
-@router.callback_query(F.data == "my_plan")
-async def cb_my_plan(cq: CallbackQuery):
-    user = await get_user(cq.from_user.id)
-    if not user or not user.get("calories"):
-        await cq.answer("⚠️ Спочатку розрахуй КБЖУ!", show_alert=True)
-        return
-    meal = build_meal_plan(
-        user["calories"], user["protein"],
-        user["fat"], user["carbs"]
-    )
-    goal_label = GOALS.get(user["goal"], ("Не вказано",))[0]
-    text = (
-        f"🍽 <b>Твій план харчування</b>\n\n"
-        f"🎯 Ціль: {goal_label}\n"
-        f"🔥 Норма: {user['calories']} ккал/день\n"
-        f"🥩 Б: {user['protein']}г  "
-        f"🧈 Ж: {user['fat']}г  "
-        f"🌾 В: {user['carbs']}г\n\n"
-        f"{meal}\n"
-        f"<b>📌 Рекомендовані продукти:</b>\n\n"
-        f"🌾 Крупи: гречка, овес, рис, булгур\n"
-        f"🥩 Білок: курка, індичка, тріска, яйця\n"
-        f"🫒 Жири: авокадо, оливкова олія, горіхи\n"
-        f"🥗 Овочі: броколі, шпинат, кабачок\n"
-        f"🍎 Фрукти: ягоди, ківі, яблуко\n"
-        f"🦠 Пробіотики: йогурт, кефір, квашена капуста"
-    )
-    await cq.message.edit_text(text, reply_markup=kb_back_main())
+    await cq.message.edit_text("🏠 <b>Головне меню NutriSense</b>", reply_markup=kb_main_menu(plan))
     await cq.answer()
 
 @router.callback_query(F.data == "plans")
@@ -608,6 +1115,7 @@ async def cb_plans(cq: CallbackQuery):
         for f in plan["features"]:
             text += f"  {f}\n"
         text += "\n"
+    text += "👇 Обери тариф:"
     await cq.message.edit_text(text, reply_markup=kb_plans())
     await cq.answer()
 
@@ -619,11 +1127,10 @@ async def cb_buy(cq: CallbackQuery):
         return
     p = PLANS[plan]
     text = (
-        f"{p['emoji']} <b>{p['name']}</b>\n\n"
-        f"💰 Вартість: <b>{p['price_uah']} грн/місяць</b>\n"
+        f"{p['emoji']} <b>{p['name']} — {p['price_uah']} грн/міс</b>\n\n"
         f"📅 Доступ: 30 днів\n\n"
         f"<b>Включає:</b>\n"
-        + "\n".join(p["features"])
+        + "\n".join(f"  {f}" for f in p["features"])
         + "\n\nОплата через Monobank 💳"
     )
     await cq.message.edit_text(text, reply_markup=kb_confirm_buy(plan))
@@ -638,22 +1145,28 @@ async def cb_pay_card(cq: CallbackQuery):
     p = PLANS[plan]
     user = cq.from_user
     await save_payment(
-        user_id=user.id,
-        plan=plan,
-        amount=p["price_uah"],
+        user_id=user.id, plan=plan, amount=p["price_uah"],
         invoice_id=f"jar_{user.id}_{plan}_{int(datetime.now().timestamp())}"
     )
     try:
+        b_admin = InlineKeyboardBuilder()
+        b_admin.button(
+            text=f"✅ Активувати {p['name']}",
+            callback_data=f"adm_oneclick_{user.id}_{plan}"
+        )
+        b_admin.button(text="❌ Відхилити", callback_data=f"adm_reject_{user.id}")
+        b_admin.adjust(1)
         await cq.bot.send_message(
             ADMIN_ID,
             f"💰 <b>Новий запит на оплату!</b>\n\n"
             f"👤 {user.full_name} (@{user.username or '-'})\n"
-            f"🆔 ID: {user.id}\n"
             f"💎 Тариф: {p['name']}\n"
-            f"💵 Сума: {p['price_uah']} грн"
+            f"💵 Сума: {p['price_uah']} грн",
+            reply_markup=b_admin.as_markup()
         )
     except Exception as e:
         log.warning(f"Cannot notify admin: {e}")
+
     b = InlineKeyboardBuilder()
     b.button(text="💳 Перейти до оплати", url=MONO_JAR_URL)
     b.button(text="✅ Я оплатив(ла)", callback_data=f"paid_notify_{plan}")
@@ -697,10 +1210,14 @@ async def cb_paid_notify(cq: CallbackQuery):
     await cq.message.edit_text(
         "✅ <b>Дякуємо!</b>\n\n"
         "Отримали сповіщення і перевіряємо оплату.\n"
-        "Підписка активується за кілька хвилин 🌿",
-        reply_markup=kb_back_main()
+        "Підписка активується за кілька хвилин.\n\n"
+        "Поки чекаєш — можеш пройти тест харчової поведінки 🌿",
+        reply_markup=InlineKeyboardBuilder().button(
+            text="🧠 Пройти тест", callback_data="behavior_test"
+        ).as_markup()
     )
     await cq.answer("✅ Сповіщення надіслано!")
+
 @router.callback_query(F.data.startswith("adm_oneclick_"))
 async def adm_oneclick_activate(cq: CallbackQuery):
     if not is_admin(cq.from_user.id):
@@ -708,9 +1225,7 @@ async def adm_oneclick_activate(cq: CallbackQuery):
     parts = cq.data.split("_")
     user_id = int(parts[2])
     plan = parts[3]
-    plan_until = (
-        datetime.now() + timedelta(days=PLANS[plan]["days"])
-    ).strftime("%Y-%m-%d %H:%M:%S")
+    plan_until = (datetime.now() + timedelta(days=PLANS[plan]["days"])).strftime("%Y-%m-%d %H:%M:%S")
     await upsert_user(user_id, plan=plan, plan_until=plan_until)
     try:
         await cq.bot.send_message(
@@ -718,14 +1233,13 @@ async def adm_oneclick_activate(cq: CallbackQuery):
             f"🎉 <b>Підписку активовано!</b>\n\n"
             f"Тариф: {PLANS[plan]['name']}\n"
             f"Діє до: {plan_until[:10]}\n\n"
-            f"Дякуємо! 🌿\n/menu — головне меню"
+            f"🍽 Твоє меню вже готове!\n"
+            f"/menu — перейти до меню"
         )
     except Exception as e:
         log.warning(f"Cannot notify user {user_id}: {e}")
     await cq.message.edit_text(
-        f"✅ Активовано!\n"
-        f"Юзер {user_id} — {PLANS[plan]['name']}\n"
-        f"До: {plan_until[:10]}"
+        f"✅ Активовано!\nЮзер {user_id} — {PLANS[plan]['name']}\nДо: {plan_until[:10]}"
     )
     await cq.answer("✅ Підписку активовано!")
 
@@ -737,57 +1251,27 @@ async def adm_reject_payment(cq: CallbackQuery):
     try:
         await cq.bot.send_message(
             user_id,
-            "⚠️ <b>Оплату не знайдено.</b>\n\n"
-            "Перевір чи правильно переведена сума "
-            "або напиши адміністратору."
+            "⚠️ <b>Оплату не знайдено.</b>\n\nПеревір чи правильно переведена сума або напиши адміністратору."
         )
     except Exception:
         pass
     await cq.message.edit_text(f"❌ Оплату юзера {user_id} відхилено.")
     await cq.answer("❌ Відхилено")
 
-@router.callback_query(F.data == "behavior_test")
-async def cb_behavior_test(cq: CallbackQuery, state: FSMContext):
-    await state.set_state(BehaviorTestState.waiting_answer)
-    await state.update_data(answers=[], q_num=0)
-    await cq.message.edit_text(
-        "🧠 <b>Тест харчової поведінки</b>\n\n"
-        "5 питань визначать твій тип.\n\n"
-        f"{BEHAVIOR_QUESTIONS[0]}",
-        reply_markup=kb_behavior_test(0)
-    )
-    await cq.answer()
-
-@router.callback_query(BehaviorTestState.waiting_answer, F.data.startswith("bt_"))
-async def cb_behavior_answer(cq: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    answers = data.get("answers", [])
-    q_num = data.get("q_num", 0)
-    answers.append(cq.data)
-    q_num += 1
-    if q_num >= len(BEHAVIOR_QUESTIONS):
-        await state.clear()
-        result_text = analyze_behavior(answers)
-        b = InlineKeyboardBuilder()
-        b.button(text="🏠 Головне меню", callback_data="main_menu")
-        await cq.message.edit_text(
-            f"🧠 <b>Результат тесту</b>\n\n{result_text}",
-            reply_markup=b.as_markup()
-        )
-    else:
-        await state.update_data(answers=answers, q_num=q_num)
-        await cq.message.edit_text(
-            f"<b>Питання {q_num+1}/5</b>\n\n{BEHAVIOR_QUESTIONS[q_num]}",
-            reply_markup=kb_behavior_test(q_num)
-        )
-    await cq.answer()
-
+# ─── ТРЕКЕР ────────────────────────────────────────────────────────
 @router.callback_query(F.data == "tracker")
 async def cb_tracker(cq: CallbackQuery):
     user = await get_user(cq.from_user.id)
     if not has_access(user, "premium"):
-        await cq.answer("🔒 Трекер доступний з Premium", show_alert=True)
+        await cq.message.edit_text(
+            "🔒 <b>Трекер доступний з Premium</b>\n\n"
+            "Фіксуй прийоми їжі і отримуй щотижневий звіт прогресу.\n\n"
+            "Вартість: <b>349 грн/міс</b>",
+            reply_markup=kb_plans()
+        )
+        await cq.answer()
         return
+
     today = datetime.now().strftime("%Y-%m-%d")
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
@@ -796,60 +1280,56 @@ async def cb_tracker(cq: CallbackQuery):
             (cq.from_user.id, today)
         ) as cur:
             entries = await cur.fetchall()
+
     text = f"📅 <b>Трекер їжі — {today}</b>\n\n"
     if entries:
+        total_meals = len(entries)
+        text += f"Записано прийомів: {total_meals}\n\n"
         for e in entries:
             text += f"• {e['meal']}: {e['note']}\n"
+        text += "\n💡 Надсилай прийоми у форматі:\n<code>Сніданок: вівсянка, яйця, ягоди</code>"
     else:
-        text += "Записів немає.\nФормат: Сніданок: вівсянка, яйця"
+        text += (
+            "Сьогодні записів немає.\n\n"
+            "Надсилай прийоми їжі у форматі:\n"
+            "<code>Сніданок: вівсянка, яйця, ягоди</code>\n\n"
+            "💡 Трекер допомагає бачити реальну картину харчування"
+        )
+
     b = InlineKeyboardBuilder()
+    b.button(text="🍽 Моє меню", callback_data="menu_today")
     b.button(text="🏠 Головне меню", callback_data="main_menu")
+    b.adjust(1)
     await cq.message.edit_text(text, reply_markup=b.as_markup())
     await cq.answer()
 
-@router.callback_query(F.data == "plate_analysis")
-async def cb_plate_analysis(cq: CallbackQuery):
-    user = await get_user(cq.from_user.id)
-    if not has_access(user, "premium"):
-        await cq.answer("🔒 Доступний з Premium", show_alert=True)
-        return
-    await cq.message.edit_text(
-        "📸 <b>Аналіз тарілки</b>\n\n"
-        "Надішли фото своєї тарілки 👇",
-        reply_markup=kb_back_main()
-    )
-    await cq.answer()
-
-@router.message(F.content_type == ContentType.PHOTO)
-async def handle_photo(msg: Message):
+@router.message(F.text.regexp(r"^(Сніданок|Обід|Вечеря|Перекус):.+"))
+async def handle_tracker_entry(msg: Message):
     user = await get_user(msg.from_user.id)
     if not has_access(user, "premium"):
-        await msg.answer("🔒 Аналіз фото доступний з Premium. /plans")
         return
+    parts = msg.text.split(":", 1)
+    meal = parts[0].strip()
+    note = parts[1].strip() if len(parts) > 1 else ""
+    today = datetime.now().strftime("%Y-%m-%d")
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO tracker (user_id, date, meal, note) VALUES (?,?,?,?)",
+            (msg.from_user.id, today, meal, note)
+        )
+        await db.commit()
+    b = InlineKeyboardBuilder()
+    b.button(text="📅 Переглянути трекер", callback_data="tracker")
+    b.button(text="🍽 Моє меню", callback_data="menu_today")
+    b.adjust(1)
     await msg.answer(
-        "🔍 <b>Аналіз тарілки:</b>\n\n"
-        "✅ Є джерело білку\n"
-        "✅ Є овочі\n"
-        "⚠️ Додай більше різнокольорових овочів\n"
-        "⚠️ Додай джерело корисних жирів\n\n"
-        "💡 Прагни до правила тарілки:\n"
-        "½ овочі · ¼ білок · ¼ крупи",
-        reply_markup=kb_back_main()
+        f"✅ <b>Записано!</b>\n\n"
+        f"🍽 {meal}: {note}\n\n"
+        f"Продовжуй фіксувати прийоми їжі 💪",
+        reply_markup=b.as_markup()
     )
 
-@router.callback_query(F.data == "ai_nutritionist")
-async def cb_ai_nutritionist(cq: CallbackQuery):
-    user = await get_user(cq.from_user.id)
-    if not has_access(user, "vip"):
-        await cq.answer("🔒 Доступний з VIP", show_alert=True)
-        return
-    await cq.message.edit_text(
-        "🤖 <b>ШІ-нутриціолог</b>\n\n"
-        "Постав будь-яке питання про харчування 👇",
-        reply_markup=kb_back_main()
-    )
-    await cq.answer()
-
+# ─── ПРОФІЛЬ ───────────────────────────────────────────────────────
 @router.callback_query(F.data == "my_profile")
 async def cb_my_profile(cq: CallbackQuery):
     user = await get_user(cq.from_user.id)
@@ -864,29 +1344,93 @@ async def cb_my_profile(cq: CallbackQuery):
         until_label = f"{until.strftime('%d.%m.%Y')} (ще {days_left} дн.)"
     else:
         until_label = "—"
+
     text = (
         f"👤 <b>Мій профіль</b>\n\n"
         f"💎 Тариф: {plan_name}\n"
         f"📅 Діє до: {until_label}\n"
-        f"📚 Тиждень: {user.get('week', 1)}/28\n\n"
+        f"📚 Тиждень курсу: {user.get('week', 1)}/28\n\n"
     )
     if user.get("calories"):
         goal_label = GOALS.get(user["goal"], ("—",))[0]
         text += (
             f"<b>📊 Мій КБЖУ:</b>\n"
             f"🔥 {user['calories']} ккал/день\n"
-            f"🥩 Білок: {user['protein']}г\n"
-            f"🧈 Жири: {user['fat']}г\n"
-            f"🌾 Вуглеводи: {user['carbs']}г\n"
+            f"🥩 Білок: {user['protein']}г  "
+            f"🧈 Жири: {user['fat']}г  "
+            f"🌾 Вугл.: {user['carbs']}г\n"
             f"🎯 Ціль: {goal_label}\n"
         )
+
     b = InlineKeyboardBuilder()
     b.button(text="🔄 Перерахувати КБЖУ", callback_data="kbju_start")
-    b.button(text="💎 Підписка", callback_data="plans")
+    b.button(text="🍽 Моє меню", callback_data="menu_today")
+    b.button(text="💎 Продовжити підписку", callback_data="plans")
+    b.button(text="🏠 Головне меню", callback_data="main_menu")
+    b.adjust(2)
+    await cq.message.edit_text(text, reply_markup=b.as_markup())
+    await cq.answer()
+
+# ─── КОНТЕНТ ───────────────────────────────────────────────────────
+@router.callback_query(F.data == "weekly_content")
+async def cb_weekly_content(cq: CallbackQuery):
+    user = await get_user(cq.from_user.id)
+    if not has_access(user, "start"):
+        await cq.message.edit_text(
+            "🔒 <b>Освітній контент доступний з Start</b>\n\n"
+            "28 тижнів нутриціологічних знань:\n"
+            "🧠 Харчова поведінка\n"
+            "🥗 Макро і мікронутрієнти\n"
+            "😴 Сон, стрес і вага\n"
+            "🍽 Правила тарілки\n\n"
+            "Вартість: <b>199 грн/міс</b>",
+            reply_markup=kb_plans()
+        )
+        await cq.answer()
+        return
+
+    week_num = user.get("week", 1) or 1
+    week_data = WEEKLY_CONTENT.get(week_num, WEEKLY_CONTENT[1])
+    posts = week_data["posts"]
+
+    text = (
+        f"📚 <b>Тиждень {week_num}: {week_data['theme']}</b>\n\n"
+        f"Матеріалів цього тижня: {len(posts)}\n"
+        f"Прогрес: тиждень {week_num} з 28\n\n"
+    )
+    for p in posts:
+        text += f"📌 {p['title']}\n"
+
+    b = InlineKeyboardBuilder()
+    for i, p in enumerate(posts):
+        b.button(text=f"📖 {p['title'][:35]}", callback_data=f"read_post_{week_num}_{i}")
+    b.button(text="🍽 Моє меню", callback_data="menu_today")
     b.button(text="🏠 Головне меню", callback_data="main_menu")
     b.adjust(1)
     await cq.message.edit_text(text, reply_markup=b.as_markup())
     await cq.answer()
+
+@router.callback_query(F.data.startswith("read_post_"))
+async def cb_read_post(cq: CallbackQuery):
+    parts = cq.data.split("_")
+    week_num, post_idx = int(parts[2]), int(parts[3])
+    week_data = WEEKLY_CONTENT.get(week_num)
+    if not week_data or post_idx >= len(week_data["posts"]):
+        await cq.answer("⚠️ Не знайдено", show_alert=True)
+        return
+    post = week_data["posts"][post_idx]
+    b = InlineKeyboardBuilder()
+    if post_idx > 0:
+        b.button(text="◀️ Попередній", callback_data=f"read_post_{week_num}_{post_idx-1}")
+    if post_idx < len(week_data["posts"]) - 1:
+        b.button(text="Наступний ▶️", callback_data=f"read_post_{week_num}_{post_idx+1}")
+    b.button(text="🍽 Застосувати в меню", callback_data="menu_today")
+    b.button(text="📚 До тижня", callback_data="weekly_content")
+    b.adjust(2, 1)
+    await cq.message.edit_text(post["text"], reply_markup=b.as_markup())
+    await cq.answer()
+
+# ─── АДМІН ─────────────────────────────────────────────────────────
 @router.callback_query(F.data == "adm_stats")
 async def adm_stats(cq: CallbackQuery):
     if not is_admin(cq.from_user.id):
@@ -897,7 +1441,6 @@ async def adm_stats(cq: CallbackQuery):
         f"👥 Всього юзерів: {stats['total']}\n"
         f"💎 Платних: {stats['paid']}\n"
         f"🆓 Безкоштовних: {stats['total'] - stats['paid']}\n"
-        f"✅ Успішних оплат: {stats['payments']}\n"
         f"💰 Дохід: {stats['revenue']} грн\n"
         f"📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}"
     )
@@ -928,9 +1471,7 @@ async def adm_broadcast(cq: CallbackQuery, state: FSMContext):
     if not is_admin(cq.from_user.id):
         return
     await state.set_state(AdminBroadcastState.waiting_text)
-    await cq.message.edit_text(
-        "📢 <b>Розсилка</b>\n\nНадішли текст для всіх юзерів:"
-    )
+    await cq.message.edit_text("📢 <b>Розсилка</b>\n\nНадішли текст для всіх юзерів:")
     await cq.answer()
 
 @router.message(AdminBroadcastState.waiting_text)
@@ -947,9 +1488,7 @@ async def adm_do_broadcast(msg: Message, state: FSMContext):
         except Exception:
             failed += 1
     await msg.answer(
-        f"✅ Розсилка завершена\n"
-        f"📤 Відправлено: {sent}\n"
-        f"❌ Помилок: {failed}",
+        f"✅ Розсилка завершена\n📤 Відправлено: {sent}\n❌ Помилок: {failed}",
         reply_markup=kb_admin()
     )
 
@@ -965,228 +1504,37 @@ async def adm_send_content(cq: CallbackQuery):
             continue
         week_num = u.get("week", 1) or 1
         week_data = WEEKLY_CONTENT.get(week_num)
-        if not week_data:
+        if not week_data or not week_data["posts"]:
             continue
-        posts = week_data["posts"]
-        if not posts:
-            continue
-        post = posts[0]
+        post = week_data["posts"][0]
         try:
             b = InlineKeyboardBuilder()
             b.button(text="📚 Всі матеріали тижня", callback_data="weekly_content")
+            b.button(text="🍽 Моє меню", callback_data="menu_today")
+            b.adjust(1)
             await cq.bot.send_message(
-                u["user_id"], post["text"],
+                u["user_id"],
+                f"📚 <b>Новий тиждень в NutriSense!</b>\n\n"
+                f"<b>Тиждень {week_num}: {week_data['theme']}</b>\n\n"
+                + post["text"],
                 reply_markup=b.as_markup()
             )
-            next_week = min(week_num + 1, 28)
-            await upsert_user(u["user_id"], week=next_week)
+            await upsert_user(u["user_id"], week=min(week_num + 1, 28))
             sent += 1
         except Exception:
             pass
     await cq.message.edit_text(
-        f"✅ Контент відправлено {sent} юзерам",
-        reply_markup=kb_admin()
+        f"✅ Контент відправлено {sent} юзерам", reply_markup=kb_admin()
     )
 
 @router.callback_query(F.data == "adm_back")
 async def adm_back(cq: CallbackQuery):
     if not is_admin(cq.from_user.id):
         return
-    await cq.message.edit_text(
-        "🔐 <b>Адмін панель NutriSense</b>",
-        reply_markup=kb_admin()
-    )
+    await cq.message.edit_text("🔐 <b>Адмін панель NutriSense</b>", reply_markup=kb_admin())
     await cq.answer()
 
-@router.callback_query(F.data == "weekly_content")
-async def cb_weekly_content(cq: CallbackQuery):
-    user = await get_user(cq.from_user.id)
-    if not has_access(user, "start"):
-        await cq.answer("🔒 Контент доступний з Start", show_alert=True)
-        return
-    week_num = user.get("week", 1) or 1
-    week_data = WEEKLY_CONTENT.get(week_num, WEEKLY_CONTENT[1])
-    posts = week_data["posts"]
-    text = (
-        f"📚 <b>Тиждень {week_num}: {week_data['theme']}</b>\n\n"
-        f"Матеріалів: {len(posts)}\n\n"
-    )
-    for p in posts:
-        text += f"📌 День {p['day']}: {p['title']}\n"
-    text += f"\nПрогрес: тиждень {week_num} з 28"
-    b = InlineKeyboardBuilder()
-    for i, p in enumerate(posts):
-        b.button(
-            text=f"📖 {p['title'][:30]}",
-            callback_data=f"read_post_{week_num}_{i}"
-        )
-    b.button(text="◀️ Назад", callback_data="main_menu")
-    b.adjust(1)
-    await cq.message.edit_text(text, reply_markup=b.as_markup())
-    await cq.answer()
-
-@router.callback_query(F.data.startswith("read_post_"))
-async def cb_read_post(cq: CallbackQuery):
-    parts = cq.data.split("_")
-    week_num, post_idx = int(parts[2]), int(parts[3])
-    week_data = WEEKLY_CONTENT.get(week_num)
-    if not week_data or post_idx >= len(week_data["posts"]):
-        await cq.answer("⚠️ Не знайдено", show_alert=True)
-        return
-    post = week_data["posts"][post_idx]
-    b = InlineKeyboardBuilder()
-    if post_idx > 0:
-        b.button(text="◀️ Попередній", callback_data=f"read_post_{week_num}_{post_idx-1}")
-    if post_idx < len(week_data["posts"]) - 1:
-        b.button(text="Наступний ▶️", callback_data=f"read_post_{week_num}_{post_idx+1}")
-    b.button(text="📚 До тижня", callback_data="weekly_content")
-    b.adjust(2, 1)
-    await cq.message.edit_text(post["text"], reply_markup=b.as_markup())
-    await cq.answer()
-WEEKLY_CONTENT = {
-    1: {
-        "theme": "🌱 Основи усвідомленого харчування",
-        "posts": [
-            {"day": 1, "rubric": "знання", "title": "Що таке усвідомлене харчування?",
-             "text": "🧠 <b>Тиждень 1 · День 1</b>\n\n<b>Усвідомлене харчування — це не дієта.</b>\n\nЦе вміння чути своє тіло:\n→ їсти, коли є фізичний голод\n→ зупинятися при насиченні\n→ обирати їжу, яка дає енергію\n\nФормула здорової харчової поведінки:\nЇм за фізіологічним голодом\nСмачну та поживну їжу\nЗупиняюся за насиченням\nЗабуваю про їжу до наступного голоду 🌿"},
-            {"day": 2, "rubric": "поведінка", "title": "Шкала голоду-ситості",
-             "text": "🌡 <b>Тиждень 1 · День 2</b>\n\n<b>Шкала голоду-ситості (1-10)</b>\n\n1 — Дуже сильний голод\n2 — Комфортний голод, треба їсти\n3 — Легкий голод\n4 — Нейтральний стан ← <b>починай їсти</b>\n5 — Легка ситість\n6 — Комфортна ситість ← <b>зупиняйся</b>\n7 — Насичення\n8 — Трішки переїв\n9 — Дуже переїв\n10 — Крайня ситість\n\n<b>Практика:</b> перевіряй рівень перед кожним прийомом їжі 🌿"},
-            {"day": 4, "rubric": "тарілка", "title": "Ідеальна тарілка",
-             "text": "🍽 <b>Тиждень 1 · День 4</b>\n\n<b>Формула збалансованої тарілки:</b>\n\n🥗 1/2 тарілки — різнокольорові овочі\n🍗 1/4 тарілки — білок\n🌾 1/4 тарілки — складні вуглеводи\n🫒 невелика кількість — корисні жири\n\nЦя формула працює для кожного прийому їжі 🌿"},
-            {"day": 6, "rubric": "знання", "title": "Чому заборони не працюють",
-             "text": "🚫 <b>Тиждень 1 · День 6</b>\n\n<b>Немає поганої їжі.</b>\n\nКоли забороняємо щось:\n❌ мозок фіксується на забороненому\n❌ зростає тяга і напруга\n❌ зрив — і відчуття провини\n\nКоли їжа дозволена:\n✅ зникають зриви\n✅ баланс важливіший за ідеальність\n✅ повертається задоволення від їжі 🌿"},
-        ]
-    },
-    2: {
-        "theme": "🥗 Макронутрієнти: Білок",
-        "posts": [
-            {"day": 1, "rubric": "знання", "title": "Навіщо нам білок?",
-             "text": "💪 <b>Тиждень 2 · День 1</b>\n\n<b>Білок — будівельний матеріал тіла.</b>\n\nДефіцит білка:\n→ випадіння волосся та ламкість нігтів\n→ збої в гормональній системі\n→ ризик набряків\n→ зниження імунітету\n\n<b>Норма:</b> 1.4-2.0 г на кг ваги\nРозрахуй точно через /kbju 📊"},
-            {"day": 3, "rubric": "тарілка", "title": "Жирний vs нежирний білок",
-             "text": "🐟 <b>Тиждень 2 · День 3</b>\n\n<b>ЖИРНИЙ БІЛОК</b>\n• Лосось, форель, скумбрія\n• Цілі яйця\n• Червоне м'ясо\n• Домашній сир 9%\n\n<b>НЕЖИРНИЙ БІЛОК</b>\n• Куряче філе, індичка\n• Яєчний білок\n• Тріска, хек, судак\n• Креветки, кальмари\n• Знежирений сир 2%\n\nНа сніданку — жирний, на вечерю — нежирний 🌿"},
-            {"day": 5, "rubric": "рецепт", "title": "Сніданок з білком за 10 хв",
-             "text": "🥘 <b>Тиждень 2 · День 5</b>\n\n<b>Омлет з овочами</b>\n\n• 3 яйця\n• 50г шпинату\n• 1/2 помідора\n• 30г твердого сиру\n• 1 ч.л. оливкової олії\n\nКБЖУ на порцію:\nКалорії: 320 ккал\nБілок: 24г · Жири: 22г · Вуглеводи: 4г\n\nІдеальний старт дня 💚"},
-        ]
-    },
-    3: {"theme": "🧈 Макронутрієнти: Жири",
-        "posts": [
-            {"day": 1, "rubric": "знання", "title": "Жири — не ворог",
-             "text": "🥑 <b>Тиждень 3 · День 1</b>\n\n<b>Жири — основа гормонального здоров'я.</b>\n\nДефіцит жирів:\n→ гормональний збій\n→ суха шкіра, ламке волосся\n→ вітаміни A, D, E, K не засвоюються\n→ мозок на 60% з жирів\n\nПравило: жири потрібні, але правильні 🌿"},
-            {"day": 3, "rubric": "тарілка", "title": "Насичені / Ненасичені / Омега-3",
-             "text": "🫒 <b>Тиждень 3 · День 3</b>\n\n<b>НАСИЧЕНІ</b> (обмежити)\nВершкове масло, сало, жирне м'ясо\n\n<b>НЕНАСИЧЕНІ</b> ✅\nОливкова олія, авокадо, горіхи\n\n<b>ОМЕГА-3</b> ✅✅\nЛосось, скумбрія, насіння льону, волоські горіхи\n\nОмега-3 — 2-3 рази на тиждень 💚"},
-        ]
-    },
-    4: {"theme": "🌾 Макронутрієнти: Вуглеводи",
-        "posts": [
-            {"day": 1, "rubric": "знання", "title": "Вуглеводи — паливо для мозку",
-             "text": "⚡ <b>Тиждень 4 · День 1</b>\n\nВуглеводи — головне паливо для мозку та м'язів.\n\nПри нестачі:\n→ туман у голові\n→ дратівливість, апатія\n→ порушення нервової системи\n\nЗолоте правило: їж переважно складні вуглеводи — крупи, хліб, овочі 🌿"},
-            {"day": 3, "rubric": "тарілка", "title": "Прості vs складні вуглеводи",
-             "text": "🌾 <b>Тиждень 4 · День 3</b>\n\n<b>ПРОСТІ</b> (обмежити)\nФрукти, цукор, мед, солодощі\n\n<b>СКЛАДНІ</b> ✅ (основа)\n• Крупи: гречка, овес, рис, булгур\n• ЦЗ хліб\n• Бобові: сочевиця, нут\n• Батат, картопля\n\nЧим більше клітковини — тим довше ситість 💚"},
-        ]
-    },
-    5: {"theme": "🧠 Харчова поведінка",
-        "posts": [
-            {"day": 1, "rubric": "поведінка", "title": "3 типи голоду",
-             "text": "🧠 <b>Тиждень 5 · День 1</b>\n\n<b>Гомеостатичний голод</b> 🟢\nНаростає поступово. Що робити: їсти\n\n<b>Гедонічний голод</b> 🟡\nВиникає без фізичного голоду.\nЩо робити: пауза, відволіктись, і якщо хочеш — їсти\n\n<b>Дисрегульований голод</b> 🔴\nГолод без насичення.\nЩо робити: регулярні прийоми, достатня калорійність, сон 🌿"},
-        ]
-    },
-    6: {"theme": "😴 Сон, стрес і харчування",
-        "posts": [
-            {"day": 1, "rubric": "знання", "title": "Як сон впливає на вагу",
-             "text": "😴 <b>Тиждень 6 · День 1</b>\n\nПри нестачі сну:\n→ Зростає грелін (гормон голоду)\n→ Знижується лептин (насичення)\n→ Тягне на солодке і жирне\n\nЩо робити:\n✅ 7-9 годин сну\n✅ Стабільний час сну\n✅ Вечеря не перед сном\n✅ Мінімум екранів ввечері 🌿"},
-        ]
-    },
-    7: {"theme": "🦠 Пробіотики і мікробіом",
-        "posts": [
-            {"day": 1, "rubric": "знання", "title": "Мікробіом керує голодом",
-             "text": "🦠 <b>Тиждень 7 · День 1</b>\n\n90% серотоніну синтезується в кишківнику.\n\nЗдорові бактерії впливають на:\n🧠 Настрій\n🛡 Імунітет\n🍽 Апетит і тягу\n\nЩо підтримує мікробіом:\n✅ Йогурт, кефір, квашена капуста\n✅ Клітковина щодня\n✅ Різноманітне харчування 💚"},
-        ]
-    },
-    8: {"theme": "🍽 Сніданок", "posts": [
-        {"day": 1, "rubric": "тарілка", "title": "Формула ідеального сніданку",
-         "text": "🌅 <b>Тиждень 8 · День 1</b>\n\n1/4 — білок\n1/8 — вуглеводи\n1/4 — насичені жири\n1/6 — ненасичені жири\n1/2 — овочі та ягоди\n\n5 варіантів:\n1. Овсянка + ягоди + яйце\n2. Омлет + авокадо + хліб\n3. Йогурт + фрукти + горіхи\n4. Яйця + лосось + огірок\n5. Гречка + яйце + салат 🌿"},
-    ]},
-    9: {"theme": "☀️ Обід", "posts": [
-        {"day": 1, "rubric": "тарілка", "title": "Формула обіду",
-         "text": "☀️ <b>Тиждень 9 · День 1</b>\n\n1/4 — білок\n1/4 — вуглеводи (найбільше за день)\n невелика кількість жирів\n1/2 — овочі різнокольорові 💚"},
-    ]},
-    10: {"theme": "🌙 Вечеря", "posts": [
-        {"day": 1, "rubric": "тарілка", "title": "Формула вечері",
-         "text": "🌙 <b>Тиждень 10 · День 1</b>\n\n1/3 — нежирний білок\n1/6 — складні вуглеводи\n мінімум жирів\n1/2 — овочі\n\nТипові помилки:\n❌ Тільки жирний білок\n❌ Немає круп\n❌ Мало овочів 🌿"},
-    ]},
-    11: {"theme": "💧 Гідратація", "posts": [
-        {"day": 1, "rubric": "знання", "title": "Вода та обмін речовин",
-         "text": "💧 <b>Тиждень 11 · День 1</b>\n\nНорма: 30-35 мл на кг ваги\n\nОзнаки нестачі:\n→ Втома і туман у голові\n→ Хибне відчуття голоду\n→ Запори\n\nЛайфхак: випий склянку води перед їжею 💚"},
-    ]},
-    12: {"theme": "🏋️ Харчування і тренування", "posts": [
-        {"day": 1, "rubric": "знання", "title": "До та після тренування",
-         "text": "🏋️ <b>Тиждень 12 · День 1</b>\n\nДо (за 1-2 год):\n🌾 Складні вуглеводи + білок\n\nПісля (30-60 хв):\n🥩 Білок + прості вуглеводи\n\nВуглеводи після тренування відновлюють глікоген 💪"},
-    ]},
-    13: {"theme": "🥗 Клітковина", "posts": [
-        {"day": 1, "rubric": "знання", "title": "Норма клітковини",
-         "text": "🌿 <b>Тиждень 13 · День 1</b>\n\nНорма: 25-35г на день\n\nДжерела:\n🥦 Овочі і зелень\n🍎 Фрукти з шкіркою\n🌾 Цільнозернові крупи\n🫘 Бобові\n\nКлітковина годує бактерії і дає ситість 💚"},
-    ]},
-    14: {"theme": "🍫 Солодке без шкоди", "posts": [
-        {"day": 1, "rubric": "поведінка", "title": "Десерт без провини",
-         "text": "🍫 <b>Тиждень 14 · День 1</b>\n\nСолодке можна. Питання як і коли.\n\nНайкращий час:\n✅ Після сніданку або обіду\n✅ Після повноцінного прийому їжі\n✅ При фізичному голоді\n\nЗаборона → зрив → провина\nДозвіл → задоволення → контроль 💚"},
-    ]},
-    15: {"theme": "⚖️ Управління вагою", "posts": [
-        {"day": 1, "rubric": "знання", "title": "Дефіцит калорій правильно",
-         "text": "⚖️ <b>Тиждень 15 · День 1</b>\n\nБезпечний дефіцит: 300-500 ккал\n\nПравила:\n✅ Не менше 1200-1500 ккал\n✅ Достатньо білку 1.6-2г/кг\n✅ Темп: 0.5-1 кг на тиждень\n\nРозрахуй свою норму: /kbju 📊"},
-    ]},
-    16: {"theme": "⚖️ Гормони та харчування", "posts": [
-        {"day": 1, "rubric": "знання", "title": "Як харчування впливає на гормони",
-         "text": "⚖️ <b>Тиждень 16 · День 1</b>\n\nІнсулін — регулює цукор.\nЛептин — сигнал ситості.\nКортизол — гормон стресу.\n\nЯк підтримати баланс:\n✅ Збалансована тарілка\n✅ Регулярні прийоми\n✅ Якісний сон\n✅ Зниження стресу 🌿"},
-    ]},
-    17: {"theme": "☀️ Вітамін D", "posts": [
-        {"day": 1, "rubric": "знання", "title": "Вітамін D: дефіцит у більшості",
-         "text": "☀️ <b>Тиждень 17 · День 1</b>\n\nДефіцит D:\n→ Втома, депресія\n→ Слабкий імунітет\n→ Ламкі кістки\n\nДжерела:\n☀️ Сонце\n🐟 Жирна риба\n🥚 Жовтки\n💊 Добавки D3\n\nОптимальний рівень: 50-80 нг/мл 💚"},
-    ]},
-    18: {"theme": "💊 Залізо", "posts": [
-        {"day": 1, "rubric": "знання", "title": "Залізодефіцит: як виявити",
-         "text": "🩸 <b>Тиждень 18 · День 1</b>\n\nОзнаки дефіциту:\n→ Хронічна втома\n→ Блідість\n→ Випадіння волосся\n\nДжерела:\n🥩 Червоне м'ясо, печінка\n🌿 Шпинат, гречка, сочевиця\n\nЇж з вітаміном С — засвоєння +50% 🌿"},
-    ]},
-    19: {"theme": "😤 Стрес і кортизол", "posts": [
-        {"day": 1, "rubric": "поведінка", "title": "Кортизол і вага",
-         "text": "😤 <b>Тиждень 19 · День 1</b>\n\nКортизол підвищує апетит і тягу до солодкого.\n\nЩо знижує кортизол:\n✅ Сон 7-9 годин\n✅ Фізична активність\n✅ Медитація\n✅ Природа і прогулянки 🌿"},
-    ]},
-    20: {"theme": "🍱 Meal Prep", "posts": [
-        {"day": 1, "rubric": "практика", "title": "Готовлю раз на тиждень",
-         "text": "📦 <b>Тиждень 20 · День 1</b>\n\nMeal Prep за 2 години:\n🌾 Відвари 3 крупи\n🥩 Запечи курку і рибу\n🥗 Наріж овочі по контейнерах\n🫘 Відвари сочевицю\n\nРезультат: 5 днів без думок що готувати 💚"},
-    ]},
-    21: {"theme": "🎯 Харчові цілі", "posts": [
-        {"day": 1, "rubric": "поведінка", "title": "SMART-цілі",
-         "text": "🎯 <b>Тиждень 21 · День 1</b>\n\nПравильна ціль:\n✅ Конкретна\n✅ Вимірювана\n✅ Досяжна\n✅ Важлива особисто\n✅ З терміном\n\nПриклад:\nНе: хочу харчуватися здоровіше\nТак: їстиму 5 порцій овочів щодня 4 тижні 🌿"},
-    ]},
-    22: {"theme": "🧪 Аналізи", "posts": [
-        {"day": 1, "rubric": "знання", "title": "Які аналізи здати",
-         "text": "🧪 <b>Тиждень 22 · День 1</b>\n\nБазові аналізи:\n🩸 Загальний аналіз крові\n⚗️ Глюкоза, холестерин\n🦋 ТТГ (щитовидна залоза)\n☀️ Вітамін D, B12\n🥗 Магній, цинк\n\nЗдавай раз на 6 місяців 💚"},
-    ]},
-    23: {"theme": "🌍 Їжа поза домом", "posts": [
-        {"day": 1, "rubric": "практика", "title": "Правильно їсти в кафе",
-         "text": "🍽 <b>Тиждень 23 · День 1</b>\n\nЯк обирати в кафе:\n✅ Шукай білок в меню\n✅ Проси соус окремо\n✅ Замінюй картоплю фрі на овочі\n✅ Їж повільно\n\nВ дорозі:\n🥜 Горіхи, сир, яйця, фрукти 🌿"},
-    ]},
-    24: {"theme": "📱 Трекінг їжі", "posts": [
-        {"day": 1, "rubric": "поведінка", "title": "Рахувати калорії?",
-         "text": "📱 <b>Тиждень 24 · День 1</b>\n\nКоли корисно:\n✅ Хочеш зрозуміти раціон\n✅ Немає результату\n\nКоли шкідливо:\n❌ Викликає тривогу\n❌ Відмовляєшся їсти через ліміт\n\nАльтернатива: метод тарілки + відчуття голоду 💚"},
-    ]},
-    25: {"theme": "🏃 Харчування для енергії", "posts": [
-        {"day": 1, "rubric": "знання", "title": "Чому немає енергії?",
-         "text": "⚡ <b>Тиждень 25 · День 1</b>\n\nПричини втоми після їжі:\n→ Переїдання\n→ Надлишок простих вуглеводів\n→ Мало білку\n\nЩо дає енергію:\n✅ Збалансована тарілка\n✅ Регулярні прийоми\n✅ 1.5-2л води 🌿"},
-    ]},
-    26: {"theme": "🌟 Підтримка ваги", "posts": [
-        {"day": 1, "rubric": "поведінка", "title": "Як не зірватися",
-         "text": "🌟 <b>Тиждень 26 · День 1</b>\n\nДосягти легше ніж утримати.\n\nЯк підтримати:\n✅ Нова ціль\n✅ Система звичок\n✅ Регулярна перевірка\n✅ Повернення до базового протоколу 💚"},
-    ]},
-    27: {"theme": "🎁 Харчування на святах", "posts": [
-        {"day": 1, "rubric": "поведінка", "title": "Свята без зривів",
-         "text": "🎉 <b>Тиждень 27 · День 1</b>\n\n✅ Не голодуй до святкового столу\n✅ Починай з овочів\n✅ Їж повільно\n✅ Дозволяй улюблене усвідомлено\n✅ Не компенсуй голодуванням наступного дня\n✅ Повернись до режиму вранці 🌿"},
-    ]},
-    28: {"theme": "🏆 Підсумок", "posts": [
-        {"day": 1, "rubric": "знання", "title": "28 тижнів: ти зробив це!",
-         "text": "🏆 <b>Тиждень 28 · Фінал</b>\n\nТи пройшов весь курс NutriSense!\n\n✅ Навчився розрізняти голод\n✅ Зрозумів роль кожного нутрієнту\n✅ Позбувся заборон\n✅ Отримав інструменти на все життя\n\n<b>Харчування — це не дієта.\nЦе твій спосіб жити.</b>\n\nNutriSense завжди поруч 🌿💚"},
-    ]},
-}
+# ─── ПЛАНУВАЛЬНИК ──────────────────────────────────────────────────
 async def schedule_weekly_content(bot: Bot):
     while True:
         now = datetime.now()
@@ -1203,18 +1551,14 @@ async def schedule_weekly_content(bot: Bot):
                 continue
             week_num = u.get("week", 1) or 1
             week_data = WEEKLY_CONTENT.get(week_num)
-            if not week_data:
+            if not week_data or not week_data["posts"]:
                 continue
-            posts = week_data["posts"]
-            if not posts:
-                continue
-            post = posts[0]
+            post = week_data["posts"][0]
             try:
                 b = InlineKeyboardBuilder()
-                b.button(
-                    text="📚 Всі матеріали тижня",
-                    callback_data="weekly_content"
-                )
+                b.button(text="📚 Читати", callback_data="weekly_content")
+                b.button(text="🍽 Моє меню", callback_data="menu_today")
+                b.adjust(1)
                 await bot.send_message(
                     u["user_id"],
                     f"📚 <b>Новий тиждень!</b>\n\n"
@@ -1222,14 +1566,13 @@ async def schedule_weekly_content(bot: Bot):
                     + post["text"],
                     reply_markup=b.as_markup()
                 )
-                next_week = min(week_num + 1, 28)
-                await upsert_user(u["user_id"], week=next_week)
+                await upsert_user(u["user_id"], week=min(week_num + 1, 28))
                 sent += 1
             except Exception as e:
                 log.warning(f"Cannot send to {u['user_id']}: {e}")
         log.info(f"Content sent: {sent} users")
 
-
+# ─── MAIN ───────────────────────────────────────────────────────────
 async def main():
     await init_db()
     bot = Bot(
@@ -1239,10 +1582,9 @@ async def main():
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(router)
     asyncio.create_task(schedule_weekly_content(bot))
-    log.info("NutriSense Bot started")
+    log.info("NutriSense Bot v2 started")
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
-
 
 if __name__ == "__main__":
     asyncio.run(main())
